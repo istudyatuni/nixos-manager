@@ -502,7 +502,9 @@ impl App {
                 Screen::CacheSettings(_) => {
                     return self.update_cache_settings(cache_settings::Message::Close);
                 }
-                _ => {}
+                Screen::Settings(_) => {
+                    return self.update(Message::Settings(settings::Message::Cancel));
+                }
             },
             Message::FocusDialogInput(reverse) => {
                 if matches!(&self.screen, Screen::Settings(state) if !state.saving())

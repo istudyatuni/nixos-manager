@@ -453,7 +453,10 @@ impl State {
         .spacing(spacing::LG);
         let repository = column![
             text(i18n.text("settings-repository-section")).size(18),
-            field(i18n.text("settings-repository"), repository),
+            field(
+                i18n.text("settings-repository"),
+                RepositoryInput::new(repository, false).into_element(),
+            ),
             token,
             field(
                 i18n.text("settings-path"),

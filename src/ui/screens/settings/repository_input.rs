@@ -254,7 +254,8 @@ impl Widget<Message, Theme, Renderer> for RepositoryInput<'_> {
         if handled {
             shell.capture_event();
             shell.request_redraw();
-        } else {
+        } else if !matches!(key, Some((Key::Escape, _))) {
+            // Let the dialog handle Escape when the branch picker is closed.
             self.input.update(
                 input, event, layout, cursor, renderer, clipboard, shell, viewport,
             );

@@ -399,6 +399,94 @@ async fn settings_request_remote_branches_when_the_branch_picker_opens() {
 }
 
 #[tokio::test]
+async fn escape_cancels_application_settings_after_dismissing_the_branch_picker() {
+    use iced::{advanced::subscription, futures::StreamExt};
+
+    let mut app = boot_with_cache(Ok(None));
+    app.config = Some(Config {
+        repository: "https://github.com/example/repository".into(),
+        ..Config::default()
+    });
+    app.git_available = true;
+    let renderer = headless().await;
+    let size = Size::new(800.0, 1000.0);
+    let key = keyboard::Key::Named(keyboard::key::Named::Escape);
+    let escape = Event::Keyboard(keyboard::Event::KeyPressed {
+        key: key.clone(),
+        modified_key: key,
+        physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Escape),
+        location: keyboard::Location::Standard,
+        modifiers: keyboard::Modifiers::default(),
+        text: None,
+        repeat: false,
+    });
+
+    for (label, open_picker) in [("GitHub repository URL", false), ("Branch", true)] {
+        let _ = app.update(Message::OpenSettings);
+        let _ = app.update(Message::Settings(settings::Message::ScaleChanged(125)));
+        assert_eq!(app.scale_factor(), 1.25);
+        let status = {
+            let mut view = app.view();
+            let (mut tree, node, labels) = layout(&mut view, &renderer, size);
+            let label = labels.bounds(label);
+            let input = labels
+                .inputs
+                .iter()
+                .find(|input| input.y > label.y)
+                .unwrap();
+            let point = if open_picker {
+                Point::new(input.x + input.width - 12.0, input.center_y())
+            } else {
+                input.center()
+            };
+            let mut dispatch = |event: &Event| {
+                let mut messages = Vec::new();
+                let mut shell = Shell::new(&mut messages);
+                view.as_widget_mut().update(
+                    &mut tree,
+                    event,
+                    Layout::new(&node),
+                    mouse::Cursor::Available(point),
+                    &renderer,
+                    &mut clipboard::Null,
+                    &mut shell,
+                    &Rectangle::with_size(size),
+                );
+                shell.event_status()
+            };
+            assert_eq!(
+                dispatch(&Event::Mouse(mouse::Event::ButtonPressed(
+                    mouse::Button::Left
+                ))),
+                event::Status::Captured
+            );
+            if open_picker {
+                assert_eq!(dispatch(&escape), event::Status::Captured);
+            }
+            dispatch(&escape)
+        };
+        let interaction = subscription::Event::Interaction {
+            window: window::Id::unique(),
+            event: escape.clone(),
+            status,
+        };
+        let messages: Vec<_> = iced::futures::stream::select_all(
+            subscription::into_recipes(app.subscription())
+                .into_iter()
+                .map(|recipe| {
+                    recipe.stream(Box::pin(iced::futures::stream::iter([interaction.clone()])))
+                }),
+        )
+        .collect()
+        .await;
+        assert!(matches!(messages.as_slice(), [Message::DismissDialog]));
+        let _ = app.update(messages.into_iter().next().unwrap());
+        assert!(matches!(app.screen, Screen::Overview));
+        assert_eq!(app.scale_factor(), 1.0);
+    }
+}
+
+#[tokio::test]
 async fn cache_settings_show_the_expiration_and_actions_in_order() {
     let metadata = attic::Metadata {
         cache_name: "main".into(),
