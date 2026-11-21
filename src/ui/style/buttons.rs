@@ -10,6 +10,14 @@ pub fn secondary(_theme: &Theme, status: button::Status) -> button::Style {
     outlined(status, colors::TEXT, false)
 }
 
+pub fn danger(_theme: &Theme, status: button::Status) -> button::Style {
+    let mut style = outlined(status, colors::DANGER, false);
+    if status != button::Status::Disabled {
+        style.border.color = colors::DANGER.scale_alpha(0.65);
+    }
+    style
+}
+
 pub fn choice(selected: bool, status: button::Status) -> button::Style {
     let text_color = if selected {
         colors::PRIMARY

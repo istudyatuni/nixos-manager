@@ -1,7 +1,7 @@
 use fluent_bundle::FluentArgs;
 use iced::{
-    Color, Element, Fill, Font, Shrink,
-    widget::{button, column, container, scrollable, text},
+    Center, Color, Element, Fill, Font, Shrink,
+    widget::{button, column, container, row, scrollable, space, text},
 };
 
 use super::{Message, State, selection};
@@ -17,14 +17,25 @@ pub fn view<'a>(i18n: &I18n, run: Option<&Run>, state: &'a State) -> Element<'a,
     } else {
         "overview-show-journal"
     };
-    let mut content = column![
+    let mut actions = row![
         button(text(i18n.text(toggle)).size(13))
             .padding([5, 8])
             .style(buttons::secondary)
             .on_press(Message::ToggleJournal),
+        space().width(Fill),
     ]
-    .width(Fill)
+    .align_y(Center)
     .spacing(spacing::MD);
+    if let Some(run) = run.filter(|run| run.is_running()) {
+        actions = actions.push(
+            button(text(i18n.text("overview-rebuild-interrupt")).size(13))
+                .padding([5, 8])
+                .style(buttons::danger)
+                .on_press_maybe((!run.interrupting).then_some(Message::InterruptRebuild)),
+        );
+    }
+
+    let mut content = column![actions].width(Fill).spacing(spacing::MD);
 
     if let Some(run) = run {
         let status = if has_error(run) {
@@ -90,6 +101,7 @@ pub(super) fn rebuild_status(i18n: &I18n, run: &Run) -> (String, Color) {
     let mut args = FluentArgs::new();
     args.set("mode", i18n.text(run.mode.label()));
     let (key, color) = match run.outcome {
+        None if run.interrupting => ("overview-rebuild-interrupting", colors::INFO),
         None => ("overview-rebuild-running", colors::INFO),
         Some(Outcome::Success) => (
             match run.mode {

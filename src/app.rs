@@ -6,6 +6,7 @@ use iced::{
     stream, time,
     widget::{button, column, container, row, space, text},
 };
+use tokio::sync::mpsc;
 
 use crate::{
     config::{self, Config, LoadError, SaveError},
@@ -32,6 +33,7 @@ pub struct App {
     working_copy: git::WorkingCopy,
     download: overview::DownloadStatus,
     rebuild: Option<rebuild::Run>,
+    rebuild_interrupt: Option<mpsc::Sender<()>>,
     overview: overview::State,
     checking_repository: bool,
     repository_generation: u64,
@@ -67,6 +69,7 @@ impl App {
             working_copy: git::WorkingCopy::default(),
             download: overview::DownloadStatus::Idle,
             rebuild: None,
+            rebuild_interrupt: None,
             overview: overview::State::default(),
             checking_repository: false,
             repository_generation: 0,
@@ -161,6 +164,15 @@ impl App {
                 return self.inspect_repository();
             }
             Message::Overview(overview::Message::Rebuild) => return self.start_rebuild(),
+            Message::Overview(overview::Message::InterruptRebuild) => {
+                if let (Some(run), Some(interrupt)) = (&mut self.rebuild, &self.rebuild_interrupt)
+                    && run.is_running()
+                    && !run.interrupting
+                    && interrupt.try_send(()).is_ok()
+                {
+                    run.interrupting = true;
+                }
+            }
             Message::Overview(overview::Message::ToggleJournal) => {
                 self.overview.journal_expanded = !self.overview.journal_expanded;
             }
@@ -175,8 +187,10 @@ impl App {
                             let removed_bytes = run.append(lines);
                             self.overview.update_journal(run, removed_bytes);
                         }
+                        rebuild::Event::InterruptFailed => run.interrupting = false,
                         rebuild::Event::Finished(outcome) => {
                             run.outcome = Some(outcome);
+                            self.rebuild_interrupt = None;
                             self.overview.set_rebuild_error(&self.i18n, Some(run));
                             return self.inspect_repository();
                         }
@@ -280,6 +294,8 @@ impl App {
         let branch = config.branch.clone();
         let flake_directory = config.flake_directory.clone();
         let mode = self.mode;
+        let (interrupt_request, interrupt) = mpsc::channel(1);
+        self.rebuild_interrupt = Some(interrupt_request);
         self.rebuild = Some(rebuild::Run::new(mode));
         self.overview.journal_expanded = true;
         self.overview.journal = Default::default();
@@ -287,14 +303,21 @@ impl App {
         self.invalidate_repository_check();
         Task::run(
             stream::channel(16, async move |mut sender| {
-                let outcome =
-                    rebuild::run(path, repository, branch, flake_directory, mode, |event| {
+                let outcome = rebuild::run(
+                    path,
+                    repository,
+                    branch,
+                    flake_directory,
+                    mode,
+                    interrupt,
+                    |event| {
                         let mut sender = sender.clone();
                         async move {
                             let _ = sender.send(event).await;
                         }
-                    })
-                    .await;
+                    },
+                )
+                .await;
                 let _ = sender.send(rebuild::Event::Finished(outcome)).await;
             }),
             Message::Rebuild,

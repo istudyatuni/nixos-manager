@@ -1,12 +1,19 @@
 use std::{
     collections::VecDeque,
     ffi::{OsStr, OsString},
+    fs::File,
+    io::{self, Write},
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     process::Stdio,
 };
 
-use rustix::fs::{Access, access};
+use rustix::{
+    fs::{Access, access},
+    process::{ioctl_tiocsctty, setsid},
+    pty::{OpenptFlags, ioctl_tiocgptpeer, openpt, unlockpt},
+    termios::{LocalModes, OptionalActions, SpecialCodeIndex, tcgetattr, tcsetattr},
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, BufReader},
     process::Command,
@@ -19,6 +26,7 @@ use crate::git::{self, WorkingCopy};
 pub const PKEXEC: &str = "/run/wrappers/bin/pkexec";
 pub const NIXOS_REBUILD: &str = "/run/current-system/sw/bin/nixos-rebuild";
 const LOG_CAPACITY: usize = 10_000;
+const INTERRUPT_CHAR: u8 = 3;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -79,12 +87,14 @@ pub enum Outcome {
 pub enum Event {
     Inspected(WorkingCopy),
     Lines(Vec<String>),
+    InterruptFailed,
     Finished(Outcome),
 }
 
 pub struct Run {
     pub mode: Mode,
     pub outcome: Option<Outcome>,
+    pub interrupting: bool,
     lines: VecDeque<String>,
 }
 
@@ -93,6 +103,7 @@ impl Run {
         Self {
             mode,
             outcome: None,
+            interrupting: false,
             lines: VecDeque::new(),
         }
     }
@@ -133,9 +144,10 @@ pub async fn run<F: Future<Output = ()> + Send>(
     branch: String,
     flake_directory: PathBuf,
     mode: Mode,
+    mut interrupt: mpsc::Receiver<()>,
     mut emit: impl FnMut(Event) -> F + Send,
 ) -> Outcome {
-    let check = tokio::task::spawn_blocking(move || {
+    let mut inspection = tokio::task::spawn_blocking(move || {
         let status = git::inspect(&path, &repository, &branch)?;
         let flake = if status.matches_revision {
             flake_reference(&path, &flake_directory)
@@ -143,8 +155,12 @@ pub async fn run<F: Future<Output = ()> + Send>(
             Err(Outcome::Unsynced)
         };
         Ok((status, flake))
-    })
-    .await;
+    });
+    let check = tokio::select! {
+        biased;
+        Some(()) = interrupt.recv() => return Outcome::Interrupted,
+        result = &mut inspection => result,
+    };
 
     let (status, flake) = match check {
         Ok(Ok(inspection)) => inspection,
@@ -183,7 +199,7 @@ pub async fn run<F: Future<Output = ()> + Send>(
             "--flake",
         ])
         .arg(selector);
-    execute(command, emit).await
+    execute(command, interrupt, emit).await
 }
 
 fn flake_reference(repository: &Path, directory: &Path) -> Result<OsString, Outcome> {
@@ -224,8 +240,19 @@ fn flake_reference(repository: &Path, directory: &Path) -> Result<OsString, Outc
 
 async fn execute<F: Future<Output = ()> + Send>(
     mut command: Command,
+    mut interrupt: mpsc::Receiver<()>,
     mut emit: impl FnMut(Event) -> F + Send,
 ) -> Outcome {
+    if interrupt.try_recv().is_ok() {
+        return Outcome::Interrupted;
+    }
+    let mut terminal = match attach_terminal(&mut command) {
+        Ok(terminal) => terminal,
+        Err(error) => {
+            emit(Event::Lines(vec![error.to_string()])).await;
+            return Outcome::LaunchFailed;
+        }
+    };
     let mut child = match command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -246,13 +273,34 @@ async fn execute<F: Future<Output = ()> + Send>(
     tokio::spawn(read_lines(stdout, sender.clone()));
     tokio::spawn(read_lines(stderr, sender));
 
-    // The channel closes after both readers reach EOF and send their final lines.
     let mut batch = Vec::new();
-    while receiver.recv_many(&mut batch, BATCH_SIZE).await != 0 {
-        emit(Event::Lines(std::mem::take(&mut batch))).await;
+    let mut output_open = true;
+    let mut interrupt_sent = false;
+    let mut status = None;
+    while output_open || status.is_none() {
+        tokio::select! {
+            result = child.wait(), if status.is_none() => status = Some(result),
+            Some(()) = interrupt.recv(), if !interrupt_sent && status.is_none() => {
+                match terminal.write_all(&[INTERRUPT_CHAR]) {
+                    Ok(()) => interrupt_sent = true,
+                    Err(error) => {
+                        emit(Event::Lines(vec![error.to_string()])).await;
+                        emit(Event::InterruptFailed).await;
+                    }
+                }
+            }
+            count = receiver.recv_many(&mut batch, BATCH_SIZE), if output_open => {
+                if count == 0 {
+                    output_open = false;
+                } else {
+                    emit(Event::Lines(std::mem::take(&mut batch))).await;
+                }
+            }
+        }
     }
 
-    match child.wait().await {
+    match status.expect("the process has exited and both output streams have closed") {
+        Ok(status) if interrupt_sent && !status.success() => Outcome::Interrupted,
         Ok(status) => match status.code() {
             Some(0) => Outcome::Success,
             Some(126) => Outcome::Cancelled,
@@ -265,6 +313,29 @@ async fn execute<F: Future<Output = ()> + Send>(
             Outcome::WaitFailed
         }
     }
+}
+
+fn attach_terminal(command: &mut Command) -> io::Result<File> {
+    let flags = OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC;
+    let terminal = openpt(flags)?;
+    unlockpt(&terminal)?;
+    let peer = ioctl_tiocgptpeer(&terminal, flags)?;
+    let mut settings = tcgetattr(&peer)?;
+    settings.local_modes.insert(LocalModes::ISIG);
+    settings.local_modes.remove(LocalModes::ECHO);
+    settings.special_codes[SpecialCodeIndex::VINTR] = INTERRUPT_CHAR;
+    tcsetattr(&peer, OptionalActions::Now, &settings)?;
+
+    // SAFETY: The child hook performs only async-signal-safe syscalls on the
+    // already-open PTY. Both descriptors are close-on-exec.
+    unsafe {
+        command.pre_exec(move || {
+            setsid()?;
+            ioctl_tiocsctty(&peer)?;
+            Ok(())
+        });
+    }
+    Ok(File::from(terminal))
 }
 
 async fn read_lines(reader: impl AsyncRead + Unpin, sender: mpsc::Sender<String>) {

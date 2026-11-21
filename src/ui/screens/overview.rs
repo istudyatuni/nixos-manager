@@ -42,6 +42,7 @@ pub enum Message {
     SelectMode(Mode),
     Download,
     Rebuild,
+    InterruptRebuild,
     ToggleJournal,
     SelectText(selection::Target, text_editor::Action),
 }
