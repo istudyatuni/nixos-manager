@@ -18,6 +18,7 @@ mod selection;
 pub use selection::State;
 
 const CARD_WIDTH: f32 = 560.0;
+const OUTPUT_WIDTH: f32 = CARD_WIDTH * 2.0;
 
 impl Mode {
     fn label(self) -> &'static str {
@@ -102,19 +103,26 @@ pub fn view<'a>(
         }
     };
 
-    let controls = container(scrollable(controls).height(Shrink)).max_height(230);
-    let page = column![controls, journal::view(i18n, rebuild, state)]
+    let controls = container(scrollable(controls).height(Shrink))
+        .width(Fill)
+        .max_width(CARD_WIDTH)
+        .max_height(230);
+    let has_output = rebuild.is_some_and(rebuild::Run::has_lines);
+    let journal = container(journal::view(i18n, rebuild, state))
+        .width(Fill)
+        .max_width(if has_output { OUTPUT_WIDTH } else { CARD_WIDTH });
+    let page = column![controls, journal]
         .width(Fill)
         .height(Fill)
         .spacing(spacing::LG)
         .align_x(Center);
 
-    container(container(page).width(Fill).max_width(CARD_WIDTH))
+    container(page)
         .padding(Padding {
             bottom: spacing::LG,
             ..spacing::PAGE_PADDING.into()
         })
-        .center_x(Fill)
+        .width(Fill)
         .height(Fill)
         .into()
 }
@@ -225,7 +233,6 @@ fn configured<'a>(
 
     container(content)
         .width(Fill)
-        .max_width(CARD_WIDTH)
         .padding(spacing::XL)
         .style(containers::card)
         .into()
