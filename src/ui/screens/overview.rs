@@ -104,10 +104,7 @@ pub fn view<'a>(
         }
     };
 
-    let controls = container(scrollable(controls).height(Shrink))
-        .width(Fill)
-        .max_width(CARD_WIDTH)
-        .max_height(230);
+    let controls = container(controls).width(Fill).max_width(CARD_WIDTH);
     let journal = container(journal::view(i18n, rebuild, state))
         .width(Fill)
         .max_width(OUTPUT_WIDTH);
