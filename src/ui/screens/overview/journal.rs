@@ -11,6 +11,10 @@ use crate::{
     ui::style::{buttons, colors, containers, spacing},
 };
 
+mod output;
+
+pub(super) use output::Output;
+
 pub fn view<'a>(i18n: &I18n, run: Option<&Run>, state: &'a State) -> Element<'a, Message> {
     let toggle = if state.journal_expanded {
         "overview-hide-journal"
@@ -68,26 +72,23 @@ pub fn view<'a>(i18n: &I18n, run: Option<&Run>, state: &'a State) -> Element<'a,
 }
 
 fn log<'a>(i18n: &I18n, state: &'a State) -> Element<'a, Message> {
-    let output = if state.has_journal() {
-        selection::view(
-            &state.journal,
-            selection::Target::Journal,
-            Font::MONOSPACE,
-            13,
-            colors::TEXT,
-        )
-    } else {
-        text(i18n.text("overview-journal-empty"))
+    let log: Element<'_, Message> = if state.has_journal() {
+        scrollable(state.journal.view())
             .width(Fill)
-            .size(13)
-            .color(colors::TEXT_MUTED)
-            .wrapping(text::Wrapping::WordOrGlyph)
+            .height(Shrink)
+            .anchor_bottom()
             .into()
+    } else {
+        container(
+            text(i18n.text("overview-journal-empty"))
+                .width(Fill)
+                .size(13)
+                .color(colors::TEXT_MUTED)
+                .wrapping(text::Wrapping::WordOrGlyph),
+        )
+        .padding(spacing::MD)
+        .into()
     };
-    let log = scrollable(container(output).padding(spacing::MD))
-        .width(Fill)
-        .height(Shrink)
-        .anchor_bottom();
 
     container(log).width(Fill).style(containers::journal).into()
 }

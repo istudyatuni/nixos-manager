@@ -2,18 +2,15 @@ use iced::{
     Color, Element, Font,
     widget::{
         text,
-        text_editor::{self, Action, Binding, Content, Cursor, Position},
+        text_editor::{self, Action, Binding, Content},
     },
 };
 
 use super::{DownloadStatus, Message, download_status_parts, journal};
 use crate::{i18n::I18n, rebuild::Run, ui::style::inputs};
 
-const LOG_CAPACITY: usize = 10_000;
-
 #[derive(Clone, Copy)]
 pub enum Target {
-    Journal,
     RebuildError,
     DownloadError,
     DownloadDetail,
@@ -21,8 +18,7 @@ pub enum Target {
 
 pub struct State {
     pub journal_expanded: bool,
-    pub journal: Content,
-    journal_lines: VecDeque<String>,
+    pub(super) journal: journal::Output,
     pub rebuild_error: Content,
     pub download_error: Content,
     pub download_detail: Content,
@@ -32,8 +28,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             journal_expanded: true,
-            journal: Content::new(),
-            journal_lines: VecDeque::new(),
+            journal: journal::Output::default(),
             rebuild_error: Content::new(),
             download_error: Content::new(),
             download_detail: Content::new(),
@@ -48,7 +43,6 @@ impl State {
         }
 
         let content = match target {
-            Target::Journal => &mut self.journal,
             Target::RebuildError => &mut self.rebuild_error,
             Target::DownloadError => &mut self.download_error,
             Target::DownloadDetail => &mut self.download_detail,
@@ -57,39 +51,15 @@ impl State {
     }
 
     pub fn has_journal(&self) -> bool {
-        !self.journal_lines.is_empty()
+        !self.journal.is_empty()
     }
 
     pub fn clear_journal(&mut self) {
-        self.journal_lines.clear();
-        self.journal = Content::new();
+        self.journal = journal::Output::default();
     }
 
     pub fn append_journal(&mut self, lines: impl IntoIterator<Item = String>) {
-        let mut lines = lines.into_iter().peekable();
-        if lines.peek().is_none() {
-            return;
-        }
-        self.journal_lines.extend(lines);
-        let old_lines = self.journal_lines.len().saturating_sub(LOG_CAPACITY);
-        let removed_bytes: usize = self
-            .journal_lines
-            .drain(..old_lines)
-            .map(|line| line.len() + 1)
-            .sum();
-        let next = Content::with_text(&self.journal_lines.make_contiguous().join("\n"));
-        let cursor = self.journal.cursor();
-        // Translate byte offsets so trimming the log keeps selections on the retained text.
-        let translate = |position| {
-            let offset = byte_offset(&self.journal, position).saturating_sub(removed_bytes);
-            position_at(&next, offset)
-        };
-        let cursor = Cursor {
-            position: translate(cursor.position),
-            selection: cursor.selection.map(translate),
-        };
-        self.journal = next;
-        self.journal.move_to(cursor);
+        self.journal.append(lines);
     }
 
     pub fn set_rebuild_error(&mut self, i18n: &I18n, run: Option<&Run>) {
@@ -140,30 +110,3 @@ pub fn view(
         })
         .into()
 }
-
-fn byte_offset(content: &Content, position: Position) -> usize {
-    content
-        .lines()
-        .take(position.line)
-        .map(|line| line.text.len() + line.ending.as_str().len())
-        .sum::<usize>()
-        + position.column
-}
-
-fn position_at(content: &Content, mut offset: usize) -> Position {
-    let mut position = Position { line: 0, column: 0 };
-    for (index, line) in content.lines().enumerate() {
-        let length = line.text.len();
-        position = Position {
-            line: index,
-            column: offset.min(length),
-        };
-        let next_line = length + line.ending.as_str().len();
-        if offset <= length || offset < next_line {
-            break;
-        }
-        offset -= next_line;
-    }
-    position
-}
-use std::collections::VecDeque;

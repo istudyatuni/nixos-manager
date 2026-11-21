@@ -1,4 +1,4 @@
-use std::{env, path::PathBuf};
+use std::{env, path::PathBuf, time::Duration};
 
 use iced::{
     Center, Element, Fill, Subscription, Task, Theme,
@@ -102,8 +102,23 @@ impl App {
         );
         let journal = Task::run(
             unfold(receiver, |mut receiver| async move {
-                let mut lines = Vec::new();
-                (receiver.recv_many(&mut lines, 128).await != 0).then_some((lines, receiver))
+                const MAX_BATCH: usize = 1024;
+                let mut lines = vec![receiver.recv().await?];
+                // Group bursts so the UI can lay out several lines in one update.
+                let deadline = tokio::time::Instant::now() + Duration::from_millis(16);
+                while lines.len() < MAX_BATCH {
+                    let remaining = MAX_BATCH - lines.len();
+                    match tokio::time::timeout_at(
+                        deadline,
+                        receiver.recv_many(&mut lines, remaining),
+                    )
+                    .await
+                    {
+                        Ok(count) if count > 0 => {}
+                        _ => break,
+                    }
+                }
+                Some((lines, receiver))
             }),
             Message::CommandLogs,
         );
