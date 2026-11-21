@@ -1,0 +1,10 @@
+overview-unconfigured = Укажите репозиторий в настройках
+overview-repository = Используется репозиторий { $path }
+overview-mode-test = test
+overview-mode-boot = boot
+overview-mode-switch = switch
+overview-mode-test-hint = Применить сейчас. При следующей загрузке сохранится прежняя система.
+overview-mode-boot-hint = Выбрать новую систему для следующей загрузки. Текущий сеанс продолжит работу.
+overview-mode-switch-hint = Применить сейчас и выбрать для следующей загрузки.
+overview-update = Обновить систему
+overview-download = Загрузить изменения

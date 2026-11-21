@@ -1,0 +1,10 @@
+overview-unconfigured = Specify a repository in Settings
+overview-repository = Using repository { $path }
+overview-mode-test = test
+overview-mode-boot = boot
+overview-mode-switch = switch
+overview-mode-test-hint = Apply now. Keep the previous system for the next boot.
+overview-mode-boot-hint = Select the new system for the next boot. Continue using the current session.
+overview-mode-switch-hint = Apply now and select for the next boot.
+overview-update = Update system
+overview-download = Download changes
