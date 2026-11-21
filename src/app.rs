@@ -1,9 +1,9 @@
-use std::{env, path::PathBuf, time::Duration};
+use std::{env, path::PathBuf};
 
 use iced::{
     Center, Element, Fill, Subscription, Task, Theme,
     futures::{SinkExt, stream::unfold},
-    stream, time,
+    stream,
     widget::{button, column, container, row, space, text},
     window,
 };
@@ -55,7 +55,6 @@ pub enum Message {
     Downloaded(Result<git::WorkingCopy, git::Error>),
     CommandLogs(Vec<LogLine>),
     Rebuild(rebuild::Event),
-    InspectRepository,
     RepositoryInspected(u64, git::WorkingCopy),
 }
 
@@ -120,15 +119,7 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        let inspect = if self.can_inspect_repository() {
-            time::every(Duration::from_secs(3)).map(|_| Message::InspectRepository)
-        } else {
-            Subscription::none()
-        };
-        Subscription::batch([
-            window::close_requests().map(Message::WindowCloseRequested),
-            inspect,
-        ])
+        window::close_requests().map(Message::WindowCloseRequested)
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -233,7 +224,6 @@ impl App {
                     }
                 }
             }
-            Message::InspectRepository => return self.inspect_repository(),
             Message::RepositoryInspected(generation, status) => {
                 if generation == self.repository_generation {
                     self.checking_repository = false;
@@ -359,22 +349,20 @@ impl App {
         )
     }
 
-    fn can_inspect_repository(&self) -> bool {
-        matches!(self.screen, Screen::Overview)
-            && self.git_available
-            && !self.is_busy()
-            && self
-                .config
-                .as_ref()
-                .and_then(Config::repository_path)
-                .is_some()
-    }
-
     fn inspect_repository(&mut self) -> Task<Message> {
-        if !self.can_inspect_repository() || self.checking_repository {
+        if self.checking_repository
+            || !self.git_available
+            || self.is_busy()
+            || !matches!(self.screen, Screen::Overview)
+        {
             return Task::none();
         }
-        let Some(config) = self.config.clone() else {
+        let Some(config) = self
+            .config
+            .as_ref()
+            .filter(|config| config.repository_path().is_some())
+            .cloned()
+        else {
             return Task::none();
         };
         let generation = self.repository_generation;
