@@ -5,6 +5,7 @@ use iced::{
     futures::SinkExt,
     stream, time,
     widget::{button, column, container, row, space, text},
+    window,
 };
 use tokio::sync::mpsc;
 
@@ -34,6 +35,7 @@ pub struct App {
     download: overview::DownloadStatus,
     rebuild: Option<rebuild::Run>,
     rebuild_interrupt: Option<mpsc::Sender<()>>,
+    pending_close: Option<window::Id>,
     overview: overview::State,
     checking_repository: bool,
     repository_generation: u64,
@@ -41,6 +43,7 @@ pub struct App {
 
 #[derive(Clone)]
 pub enum Message {
+    WindowCloseRequested(window::Id),
     OpenSettings,
     CloseSettings,
     Overview(overview::Message),
@@ -70,6 +73,7 @@ impl App {
             download: overview::DownloadStatus::Idle,
             rebuild: None,
             rebuild_interrupt: None,
+            pending_close: None,
             overview: overview::State::default(),
             checking_repository: false,
             repository_generation: 0,
@@ -98,15 +102,26 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        if self.can_inspect_repository() {
+        let inspect = if self.can_inspect_repository() {
             time::every(Duration::from_secs(3)).map(|_| Message::InspectRepository)
         } else {
             Subscription::none()
-        }
+        };
+        Subscription::batch([
+            window::close_requests().map(Message::WindowCloseRequested),
+            inspect,
+        ])
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::WindowCloseRequested(id) => {
+                if !self.rebuild.as_ref().is_some_and(rebuild::Run::is_running) {
+                    return window::close(id);
+                }
+                self.pending_close = Some(id);
+                self.interrupt_rebuild();
+            }
             Message::OpenSettings if !self.loading && matches!(self.screen, Screen::Overview) => {
                 self.screen = Screen::Settings(settings::State::new(
                     self.config.as_ref(),
@@ -165,13 +180,7 @@ impl App {
             }
             Message::Overview(overview::Message::Rebuild) => return self.start_rebuild(),
             Message::Overview(overview::Message::InterruptRebuild) => {
-                if let (Some(run), Some(interrupt)) = (&mut self.rebuild, &self.rebuild_interrupt)
-                    && run.is_running()
-                    && !run.interrupting
-                    && interrupt.try_send(()).is_ok()
-                {
-                    run.interrupting = true;
-                }
+                self.interrupt_rebuild();
             }
             Message::Overview(overview::Message::ToggleJournal) => {
                 self.overview.journal_expanded = !self.overview.journal_expanded;
@@ -187,10 +196,16 @@ impl App {
                             let removed_bytes = run.append(lines);
                             self.overview.update_journal(run, removed_bytes);
                         }
-                        rebuild::Event::InterruptFailed => run.interrupting = false,
+                        rebuild::Event::InterruptFailed => {
+                            run.interrupting = false;
+                            self.pending_close = None;
+                        }
                         rebuild::Event::Finished(outcome) => {
                             run.outcome = Some(outcome);
                             self.rebuild_interrupt = None;
+                            if let Some(id) = self.pending_close.take() {
+                                return window::close(id);
+                            }
                             self.overview.set_rebuild_error(&self.i18n, Some(run));
                             return self.inspect_repository();
                         }
@@ -276,6 +291,16 @@ impl App {
 
     fn is_busy(&self) -> bool {
         self.download.is_running() || self.rebuild.as_ref().is_some_and(rebuild::Run::is_running)
+    }
+
+    fn interrupt_rebuild(&mut self) {
+        if let (Some(run), Some(interrupt)) = (&mut self.rebuild, &self.rebuild_interrupt)
+            && run.is_running()
+            && !run.interrupting
+            && interrupt.try_send(()).is_ok()
+        {
+            run.interrupting = true;
+        }
     }
 
     fn start_rebuild(&mut self) -> Task<Message> {
