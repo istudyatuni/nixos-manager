@@ -51,8 +51,8 @@ impl State {
         self.error = Some(error);
     }
 
-    pub fn update(&mut self, message: Message) -> Option<Config> {
-        if self.saving {
+    pub fn update(&mut self, message: Message, can_save: bool) -> Option<Config> {
+        if self.saving || (!can_save && matches!(message, Message::Save)) {
             return None;
         }
 
@@ -71,7 +71,7 @@ impl State {
         None
     }
 
-    pub fn view<'a>(&'a self, i18n: &'a I18n) -> Element<'a, Message> {
+    pub fn view<'a>(&'a self, i18n: &'a I18n, can_save: bool) -> Element<'a, Message> {
         let editing = !self.saving;
         let repository = text_input(
             &i18n.text("settings-repository-placeholder"),
@@ -93,7 +93,7 @@ impl State {
             &self.draft.branch,
         )
         .on_input_maybe(editing.then_some(Message::BranchChanged))
-        .on_submit_maybe(editing.then_some(Message::Save));
+        .on_submit_maybe((editing && can_save).then_some(Message::Save));
 
         let mut form = column![
             language_field(i18n, self.draft.language, editing),
@@ -111,6 +111,13 @@ impl State {
         if let Some(error) = self.error {
             form = form.push(text(error_text(i18n, error)).size(14).color(colors::DANGER));
         }
+        if !can_save {
+            form = form.push(
+                text(i18n.text("settings-download-in-progress"))
+                    .size(14)
+                    .color(colors::INFO),
+            );
+        }
 
         let save_label = if self.saving {
             "settings-saving"
@@ -121,7 +128,7 @@ impl State {
             button(text(i18n.text(save_label)))
                 .padding([7, 12])
                 .style(buttons::primary)
-                .on_press_maybe(editing.then_some(Message::Save)),
+                .on_press_maybe((editing && can_save).then_some(Message::Save)),
         );
 
         let form = container(form).width(Fill).max_width(488);

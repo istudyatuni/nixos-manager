@@ -12,6 +12,7 @@ settings-branch = Branch
 settings-branch-placeholder = main
 settings-save = Save
 settings-saving = Saving…
+settings-download-in-progress = You can save settings once the download finishes.
 settings-error-repository = Enter an HTTPS link to a GitHub repository.
 settings-error-token = Enter a GitHub access token without spaces.
 settings-error-path = Enter a valid local path.

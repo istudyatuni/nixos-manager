@@ -132,16 +132,7 @@ pub fn display_repo_path<'a>(path: &'a Path, home: Option<&Path>) -> Cow<'a, Pat
 }
 
 fn github_repository(input: &str) -> Option<String> {
-    let url = Url::parse(input).ok()?;
-    if url.scheme() != "https"
-        || url.host_str() != Some("github.com")
-        || url.port().is_some()
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
-        return None;
-    }
-
+    let url = github_url(input)?;
     let mut segments = url.path_segments()?;
     let owner = segments.next()?;
     let repo = segments.next()?;
@@ -158,6 +149,20 @@ fn github_repository(input: &str) -> Option<String> {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
 
     (valid_owner && valid_repo).then(|| format!("https://github.com/{owner}/{repo}"))
+}
+
+pub fn github_url(input: &str) -> Option<Url> {
+    let url = Url::parse(input).ok()?;
+    if url.scheme() != "https"
+        || url.host_str() != Some("github.com")
+        || url.port().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return None;
+    }
+
+    Some(url)
 }
 
 fn absolute_repo_path(input: &Path, home: &Path) -> Result<PathBuf, SaveError> {

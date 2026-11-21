@@ -12,6 +12,7 @@ settings-branch = Ветка
 settings-branch-placeholder = main
 settings-save = Сохранить
 settings-saving = Сохранение…
+settings-download-in-progress = Настройки можно будет сохранить после загрузки изменений.
 settings-error-repository = Укажите HTTPS-ссылку на репозиторий GitHub.
 settings-error-token = Укажите токен доступа GitHub без пробелов.
 settings-error-path = Укажите корректный локальный путь.
