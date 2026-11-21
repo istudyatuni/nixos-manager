@@ -26,6 +26,10 @@ pub fn view<'a>(i18n: &I18n, run: Option<&Run>, state: &'a State) -> Element<'a,
             .padding([5, 8])
             .style(buttons::secondary)
             .on_press(Message::ToggleJournal),
+        button(text(i18n.text("overview-clear-journal")).size(13))
+            .padding([5, 8])
+            .style(buttons::secondary)
+            .on_press_maybe(state.has_journal().then_some(Message::ClearJournal)),
         space().width(Fill),
     ]
     .align_y(Center)

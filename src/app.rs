@@ -207,6 +207,7 @@ impl App {
             Message::Overview(overview::Message::ToggleJournal) => {
                 self.overview.journal_expanded = !self.overview.journal_expanded;
             }
+            Message::Overview(overview::Message::ClearJournal) => self.overview.clear_journal(),
             Message::Overview(overview::Message::SelectText(target, action)) => {
                 self.overview.update_selection(target, action);
             }
