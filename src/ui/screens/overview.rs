@@ -14,6 +14,8 @@ use crate::{
 
 mod journal;
 
+const CARD_WIDTH: f32 = 560.0;
+
 impl Mode {
     fn label(self) -> &'static str {
         match self {
@@ -37,6 +39,9 @@ pub enum Message {
     SelectMode(Mode),
     Download,
     Rebuild,
+    ToggleJournal,
+    CopyJournal,
+    CopyError(String),
 }
 
 pub enum DownloadStatus {
@@ -59,6 +64,7 @@ pub struct Repository<'a> {
     pub busy: bool,
     pub download: &'a DownloadStatus,
     pub rebuild: Option<&'a rebuild::Run>,
+    pub journal_expanded: bool,
 }
 
 pub fn view<'a>(
@@ -71,23 +77,20 @@ pub fn view<'a>(
     let content = match repository {
         Some(repository) => {
             let run = repository.rebuild;
+            let journal_expanded = repository.journal_expanded;
             let controls = configured(i18n, repository, mode);
             if let Some(run) = run {
                 let controls = container(scrollable(controls).height(Shrink)).max_height(230);
-                let page = column![controls, journal::view(i18n, run)]
+                let page = column![controls, journal::view(i18n, run, journal_expanded)]
                     .width(Fill)
                     .height(Fill)
                     .spacing(spacing::LG)
                     .align_x(Center);
-                return container(
-                    container(page)
-                        .width(Fill)
-                        .max_width(880)
-                        .padding([spacing::LG, spacing::PAGE_PADDING]),
-                )
-                .center_x(Fill)
-                .height(Fill)
-                .into();
+                return container(container(page).width(Fill).max_width(CARD_WIDTH))
+                    .padding([spacing::LG, spacing::PAGE_PADDING])
+                    .center_x(Fill)
+                    .height(Fill)
+                    .into();
             }
             controls
         }
@@ -232,7 +235,7 @@ fn configured<'a>(i18n: &I18n, repository: Repository<'a>, mode: Mode) -> Elemen
 
     container(content)
         .width(Fill)
-        .max_width(560)
+        .max_width(CARD_WIDTH)
         .padding(spacing::XL)
         .style(containers::card)
         .into()
@@ -260,10 +263,12 @@ fn download_status<'a>(i18n: &I18n, download: &'a DownloadStatus) -> Option<Elem
         }
     };
 
-    let mut content = column![text(i18n.text(key)).size(14).color(color).align_x(Center)]
+    let status = i18n.text(key);
+    let mut content = column![text(status.clone()).size(14).color(color).align_x(Center)]
         .spacing(spacing::MD)
         .align_x(Center);
-    if let Some(detail) = detail.filter(|detail| !detail.is_empty()) {
+    let detail = detail.filter(|detail| !detail.is_empty());
+    if let Some(detail) = detail {
         content = content.push(
             container(
                 scrollable(
@@ -277,6 +282,18 @@ fn download_status<'a>(i18n: &I18n, download: &'a DownloadStatus) -> Option<Elem
             )
             .width(Fill)
             .max_height(88),
+        );
+    }
+    if matches!(download, DownloadStatus::Finished(Err(_))) {
+        let error = match detail {
+            Some(detail) => format!("{status}\n\n{detail}"),
+            None => status,
+        };
+        content = content.push(
+            button(text(i18n.text("overview-copy-error")).size(13))
+                .padding([5, 8])
+                .style(buttons::secondary)
+                .on_press(Message::CopyError(error)),
         );
     }
     Some(content.into())

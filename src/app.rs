@@ -1,7 +1,7 @@
 use std::{env, path::PathBuf, time::Duration};
 
 use iced::{
-    Center, Element, Fill, Subscription, Task, Theme,
+    Center, Element, Fill, Subscription, Task, Theme, clipboard,
     futures::SinkExt,
     stream, time,
     widget::{button, column, container, row, space, text},
@@ -32,6 +32,7 @@ pub struct App {
     working_copy: git::WorkingCopy,
     download: overview::DownloadStatus,
     rebuild: Option<rebuild::Run>,
+    journal_expanded: bool,
     checking_repository: bool,
     repository_generation: u64,
 }
@@ -66,6 +67,7 @@ impl App {
             working_copy: git::WorkingCopy::default(),
             download: overview::DownloadStatus::Idle,
             rebuild: None,
+            journal_expanded: true,
             checking_repository: false,
             repository_generation: 0,
         };
@@ -157,6 +159,17 @@ impl App {
                 return self.inspect_repository();
             }
             Message::Overview(overview::Message::Rebuild) => return self.start_rebuild(),
+            Message::Overview(overview::Message::ToggleJournal) => {
+                self.journal_expanded = !self.journal_expanded;
+            }
+            Message::Overview(overview::Message::CopyJournal) => {
+                if let Some(run) = self.rebuild.as_ref().filter(|run| run.has_lines()) {
+                    return clipboard::write(run.journal());
+                }
+            }
+            Message::Overview(overview::Message::CopyError(error)) => {
+                return clipboard::write(error);
+            }
             Message::Rebuild(event) => {
                 if let Some(run) = self.rebuild.as_mut().filter(|run| run.is_running()) {
                     match event {
@@ -261,6 +274,7 @@ impl App {
         let branch = config.branch.clone();
         let mode = self.mode;
         self.rebuild = Some(rebuild::Run::new(mode));
+        self.journal_expanded = true;
         self.invalidate_repository_check();
         Task::run(
             stream::channel(16, async move |mut sender| {
@@ -332,6 +346,7 @@ impl App {
                             busy: self.is_busy(),
                             download: &self.download,
                             rebuild: self.rebuild.as_ref(),
+                            journal_expanded: self.journal_expanded,
                         });
                 (
                     self.title(),

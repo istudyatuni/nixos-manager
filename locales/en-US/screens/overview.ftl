@@ -36,3 +36,7 @@ overview-rebuild-wait-failed = Could not determine the result of the system upda
 overview-rebuild-invalid-repository = Could not verify the working copy. Check the repository in Settings and download changes.
 overview-rebuild-hostname = Could not determine the system hostname.
 overview-rebuild-invalid-path = Could not use the repository path as a flake reference.
+overview-show-journal = Show log
+overview-hide-journal = Hide log
+overview-copy-journal = Copy log
+overview-copy-error = Copy error

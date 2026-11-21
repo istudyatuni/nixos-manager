@@ -106,6 +106,10 @@ impl Run {
         self.lines.drain(..old_lines);
     }
 
+    pub fn has_lines(&self) -> bool {
+        !self.lines.is_empty()
+    }
+
     pub fn journal(&self) -> String {
         let mut output = String::new();
         for (index, line) in self.lines.iter().enumerate() {
@@ -159,6 +163,8 @@ pub async fn run<F: Future<Output = ()> + Send>(
 
     let mut command = Command::new(PKEXEC);
     command
+        // pkexec validates an inherited SHELL against /etc/shells.
+        .env_remove("SHELL")
         .args([
             "--disable-internal-agent",
             NIXOS_REBUILD,

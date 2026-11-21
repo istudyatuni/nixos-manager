@@ -1,17 +1,17 @@
 use fluent_bundle::FluentArgs;
 use iced::{
-    Element, Fill, Font,
-    widget::{column, container, scrollable, text},
+    Center, Element, Fill, Font, Shrink,
+    widget::{button, column, container, row, scrollable, space, text},
 };
 
 use super::Message;
 use crate::{
     i18n::I18n,
     rebuild::{Mode, Outcome, Run},
-    ui::style::{colors, containers, spacing},
+    ui::style::{buttons, colors, containers, spacing},
 };
 
-pub fn view<'a>(i18n: &I18n, run: &Run) -> Element<'a, Message> {
+pub fn view<'a>(i18n: &I18n, run: &Run, expanded: bool) -> Element<'a, Message> {
     let mut args = FluentArgs::new();
     args.set("mode", i18n.text(run.mode.label()));
     let (key, color) = match run.outcome {
@@ -39,6 +39,58 @@ pub fn view<'a>(i18n: &I18n, run: &Run) -> Element<'a, Message> {
         Some(Outcome::InvalidPath) => ("overview-rebuild-invalid-path", colors::DANGER),
     };
 
+    let status = i18n.with_args(key, &args);
+    let toggle = if expanded {
+        "overview-hide-journal"
+    } else {
+        "overview-show-journal"
+    };
+    let mut actions = row![
+        button(text(i18n.text(toggle)).size(13))
+            .padding([5, 8])
+            .style(buttons::secondary)
+            .on_press(Message::ToggleJournal),
+        space().width(Fill),
+        button(text(i18n.text("overview-copy-journal")).size(13))
+            .padding([5, 8])
+            .style(buttons::secondary)
+            .on_press_maybe(run.has_lines().then_some(Message::CopyJournal)),
+    ]
+    .align_y(Center)
+    .spacing(spacing::MD);
+    if run
+        .outcome
+        .is_some_and(|outcome| !matches!(outcome, Outcome::Success | Outcome::Cancelled))
+    {
+        actions = actions.push(
+            button(text(i18n.text("overview-copy-error")).size(13))
+                .padding([5, 8])
+                .style(buttons::secondary)
+                .on_press(Message::CopyError(status.clone())),
+        );
+    }
+
+    let mut content = column![
+        actions,
+        text(status)
+            .size(14)
+            .color(color)
+            .wrapping(text::Wrapping::WordOrGlyph),
+    ]
+    .width(Fill)
+    .spacing(spacing::MD);
+    if expanded {
+        content = content.push(log(run));
+    }
+
+    container(content)
+        .width(Fill)
+        .padding(spacing::LG)
+        .style(containers::card)
+        .into()
+}
+
+fn log<'a>(run: &Run) -> Element<'a, Message> {
     let mut output = run.journal();
     if output.ends_with('\n') {
         // Give the renderer content on the final blank line so it has a height.
@@ -55,18 +107,8 @@ pub fn view<'a>(i18n: &I18n, run: &Run) -> Element<'a, Message> {
         .padding(spacing::MD),
     )
     .width(Fill)
-    .height(Fill)
+    .height(Shrink)
     .anchor_bottom();
 
-    column![
-        text(i18n.with_args(key, &args)).size(14).color(color),
-        container(log)
-            .width(Fill)
-            .height(Fill)
-            .style(containers::journal),
-    ]
-    .width(Fill)
-    .height(Fill)
-    .spacing(spacing::SM)
-    .into()
+    container(log).width(Fill).style(containers::journal).into()
 }
