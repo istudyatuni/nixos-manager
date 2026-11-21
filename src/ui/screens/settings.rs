@@ -140,12 +140,11 @@ impl State {
         } else {
             "settings-save"
         };
-        form = form.push(
-            button(text(i18n.text(save_label)))
-                .padding([7, 12])
-                .style(buttons::primary)
-                .on_press_maybe((editing && can_save).then_some(Message::Save)),
-        );
+        let save = button(text(i18n.text(save_label)))
+            .padding([7, 12])
+            .style(buttons::primary)
+            .on_press_maybe((editing && can_save).then_some(Message::Save));
+        form = form.push(container(save).align_right(Fill));
 
         let form = container(form).width(Fill).max_width(488);
         scrollable(
