@@ -16,7 +16,8 @@ use rustix::{
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, BufReader},
-    process::Command,
+    net::unix::pipe,
+    process::{Child, Command},
     sync::mpsc,
 };
 use url::Url;
@@ -253,13 +254,8 @@ async fn execute<F: Future<Output = ()> + Send>(
             return Outcome::LaunchFailed;
         }
     };
-    let mut child = match command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
+    let (mut child, output) = match spawn_with_output(&mut command) {
+        Ok(process) => process,
         Err(error) => {
             emit(Event::Lines(vec![error.to_string()])).await;
             return Outcome::LaunchFailed;
@@ -268,10 +264,7 @@ async fn execute<F: Future<Output = ()> + Send>(
 
     const BATCH_SIZE: usize = 128;
     let (sender, mut receiver) = mpsc::channel(BATCH_SIZE);
-    let stdout = child.stdout.take().expect("piped stdout");
-    let stderr = child.stderr.take().expect("piped stderr");
-    tokio::spawn(read_lines(stdout, sender.clone()));
-    tokio::spawn(read_lines(stderr, sender));
+    tokio::spawn(read_lines(output, sender));
 
     let mut batch = Vec::new();
     let mut output_open = true;
@@ -299,7 +292,7 @@ async fn execute<F: Future<Output = ()> + Send>(
         }
     }
 
-    match status.expect("the process has exited and both output streams have closed") {
+    match status.expect("the process has exited and its output has closed") {
         Ok(status) if interrupt_sent && !status.success() => Outcome::Interrupted,
         Ok(status) => match status.code() {
             Some(0) => Outcome::Success,
@@ -313,6 +306,21 @@ async fn execute<F: Future<Output = ()> + Send>(
             Outcome::WaitFailed
         }
     }
+}
+
+fn spawn_with_output(command: &mut Command) -> io::Result<(Child, pipe::Receiver)> {
+    // A shared pipe preserves write order across stdout and stderr.
+    let (reader, writer) = io::pipe()?;
+    let output = pipe::Receiver::from_owned_fd(reader.into())?;
+    let child = command
+        .stdin(Stdio::null())
+        .stdout(writer.try_clone()?)
+        .stderr(writer)
+        .spawn();
+
+    // The builder retains its copies of the write ends after spawn.
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    Ok((child?, output))
 }
 
 fn attach_terminal(command: &mut Command) -> io::Result<File> {
