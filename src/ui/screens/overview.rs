@@ -1,7 +1,7 @@
 use fluent_bundle::FluentArgs;
 use iced::{
-    Center, Element, Fill, Font, Padding, Shrink,
-    widget::{button, column, container, row, scrollable, text},
+    Center, Color, Element, Fill, Font, Padding, Shrink,
+    widget::{button, column, container, row, scrollable, text, text_editor},
 };
 use std::{borrow::Cow, path::Path};
 
@@ -13,6 +13,9 @@ use crate::{
 };
 
 mod journal;
+mod selection;
+
+pub use selection::State;
 
 const CARD_WIDTH: f32 = 560.0;
 
@@ -40,8 +43,7 @@ pub enum Message {
     Download,
     Rebuild,
     ToggleJournal,
-    CopyJournal,
-    CopyError(String),
+    SelectText(selection::Target, text_editor::Action),
 }
 
 pub enum DownloadStatus {
@@ -72,10 +74,10 @@ pub fn view<'a>(
     loading: bool,
     load_error: bool,
     rebuild: Option<&rebuild::Run>,
-    journal_expanded: bool,
+    state: &'a State,
 ) -> Element<'a, Message> {
     let controls = match repository {
-        Some(repository) => configured(i18n, repository, mode),
+        Some(repository) => configured(i18n, repository, mode, state),
         None => {
             let prompt = if loading {
                 "app-loading-settings"
@@ -100,7 +102,7 @@ pub fn view<'a>(
     };
 
     let controls = container(scrollable(controls).height(Shrink)).max_height(230);
-    let page = column![controls, journal::view(i18n, rebuild, journal_expanded)]
+    let page = column![controls, journal::view(i18n, rebuild, state)]
         .width(Fill)
         .height(Fill)
         .spacing(spacing::LG)
@@ -116,7 +118,12 @@ pub fn view<'a>(
         .into()
 }
 
-fn configured<'a>(i18n: &I18n, repository: Repository<'a>, mode: Mode) -> Element<'a, Message> {
+fn configured<'a>(
+    i18n: &I18n,
+    repository: Repository<'a>,
+    mode: Mode,
+    state: &'a State,
+) -> Element<'a, Message> {
     let mut args = FluentArgs::new();
     args.set("path", repository.path.to_string_lossy());
     let mut location = column![
@@ -211,7 +218,7 @@ fn configured<'a>(i18n: &I18n, repository: Repository<'a>, mode: Mode) -> Elemen
                 .align_x(Center),
         );
     }
-    if let Some(status) = download_status(i18n, repository.download) {
+    if let Some(status) = download_status(i18n, repository.download, state) {
         content = content.push(status);
     }
 
@@ -223,7 +230,7 @@ fn configured<'a>(i18n: &I18n, repository: Repository<'a>, mode: Mode) -> Elemen
         .into()
 }
 
-fn download_status<'a>(i18n: &I18n, download: &'a DownloadStatus) -> Option<Element<'a, Message>> {
+fn download_status_parts(download: &DownloadStatus) -> Option<(&'static str, Color, Option<&str>)> {
     let (key, color, detail) = match download {
         DownloadStatus::Idle => return None,
         DownloadStatus::Running => ("overview-download-running", colors::INFO, None),
@@ -245,37 +252,45 @@ fn download_status<'a>(i18n: &I18n, download: &'a DownloadStatus) -> Option<Elem
         }
     };
 
-    let status = i18n.text(key);
-    let mut content = column![text(status.clone()).size(14).color(color).align_x(Center)]
-        .spacing(spacing::MD)
-        .align_x(Center);
-    let detail = detail.filter(|detail| !detail.is_empty());
-    if let Some(detail) = detail {
+    Some((key, color, detail.map(String::as_str)))
+}
+
+fn download_status<'a>(
+    i18n: &I18n,
+    download: &DownloadStatus,
+    state: &'a State,
+) -> Option<Element<'a, Message>> {
+    let (key, color, _) = download_status_parts(download)?;
+    let status = if matches!(download, DownloadStatus::Finished(Err(_))) {
+        selection::view(
+            &state.download_error,
+            selection::Target::DownloadError,
+            Font::DEFAULT,
+            14,
+            color,
+        )
+    } else {
+        text(i18n.text(key))
+            .size(14)
+            .color(color)
+            .align_x(Center)
+            .into()
+    };
+    let mut content = column![status].spacing(spacing::MD).align_x(Center);
+    if !state.download_detail.is_empty() {
         content = content.push(
             container(
-                scrollable(
-                    text(detail)
-                        .width(Fill)
-                        .font(Font::MONOSPACE)
-                        .size(13)
-                        .wrapping(text::Wrapping::WordOrGlyph),
-                )
+                scrollable(selection::view(
+                    &state.download_detail,
+                    selection::Target::DownloadDetail,
+                    Font::MONOSPACE,
+                    13,
+                    colors::TEXT,
+                ))
                 .height(Shrink),
             )
             .width(Fill)
             .max_height(88),
-        );
-    }
-    if matches!(download, DownloadStatus::Finished(Err(_))) {
-        let error = match detail {
-            Some(detail) => format!("{status}\n\n{detail}"),
-            None => status,
-        };
-        content = content.push(
-            button(text(i18n.text("overview-copy-error")).size(13))
-                .padding([5, 8])
-                .style(buttons::secondary)
-                .on_press(Message::CopyError(error)),
         );
     }
     Some(content.into())

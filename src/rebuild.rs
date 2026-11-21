@@ -101,10 +101,14 @@ impl Run {
         self.outcome.is_none()
     }
 
-    pub fn append(&mut self, lines: Vec<String>) {
+    /// Appends lines and returns the byte length of the removed prefix in the journal text.
+    pub fn append(&mut self, lines: Vec<String>) -> usize {
         self.lines.extend(lines);
         let old_lines = self.lines.len().saturating_sub(LOG_CAPACITY);
-        self.lines.drain(..old_lines);
+        self.lines
+            .drain(..old_lines)
+            .map(|line| line.len() + 1)
+            .sum()
     }
 
     pub fn has_lines(&self) -> bool {

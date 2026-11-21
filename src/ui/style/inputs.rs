@@ -1,4 +1,7 @@
-use iced::{Theme, widget::text_input};
+use iced::{
+    Color, Theme,
+    widget::{text_editor, text_input},
+};
 
 use super::{borders::outline, colors, radius};
 
@@ -26,6 +29,16 @@ pub fn input(_theme: &Theme, status: text_input::Status) -> text_input::Style {
         } else {
             colors::TEXT
         },
+        selection: colors::BORDER,
+    }
+}
+
+pub fn selectable_text(color: Color) -> text_editor::Style {
+    text_editor::Style {
+        background: Color::TRANSPARENT.into(),
+        border: iced::Border::default(),
+        placeholder: colors::TEXT_MUTED,
+        value: color,
         selection: colors::BORDER,
     }
 }

@@ -1,7 +1,7 @@
 use std::{env, path::PathBuf, time::Duration};
 
 use iced::{
-    Center, Element, Fill, Subscription, Task, Theme, clipboard,
+    Center, Element, Fill, Subscription, Task, Theme,
     futures::SinkExt,
     stream, time,
     widget::{button, column, container, row, space, text},
@@ -32,7 +32,7 @@ pub struct App {
     working_copy: git::WorkingCopy,
     download: overview::DownloadStatus,
     rebuild: Option<rebuild::Run>,
-    journal_expanded: bool,
+    overview: overview::State,
     checking_repository: bool,
     repository_generation: u64,
 }
@@ -67,7 +67,7 @@ impl App {
             working_copy: git::WorkingCopy::default(),
             download: overview::DownloadStatus::Idle,
             rebuild: None,
-            journal_expanded: true,
+            overview: overview::State::default(),
             checking_repository: false,
             repository_generation: 0,
         };
@@ -133,6 +133,7 @@ impl App {
                     .cloned()
                 {
                     self.download = overview::DownloadStatus::Running;
+                    self.overview.set_download_error(&self.i18n, &self.download);
                     self.working_copy.matches_revision = false;
                     self.invalidate_repository_check();
                     return Task::perform(
@@ -156,27 +157,27 @@ impl App {
                     self.working_copy.has_local_changes = true;
                 }
                 self.download = overview::DownloadStatus::Finished(result);
+                self.overview.set_download_error(&self.i18n, &self.download);
                 return self.inspect_repository();
             }
             Message::Overview(overview::Message::Rebuild) => return self.start_rebuild(),
             Message::Overview(overview::Message::ToggleJournal) => {
-                self.journal_expanded = !self.journal_expanded;
+                self.overview.journal_expanded = !self.overview.journal_expanded;
             }
-            Message::Overview(overview::Message::CopyJournal) => {
-                if let Some(run) = self.rebuild.as_ref().filter(|run| run.has_lines()) {
-                    return clipboard::write(run.journal());
-                }
-            }
-            Message::Overview(overview::Message::CopyError(error)) => {
-                return clipboard::write(error);
+            Message::Overview(overview::Message::SelectText(target, action)) => {
+                self.overview.update_selection(target, action);
             }
             Message::Rebuild(event) => {
                 if let Some(run) = self.rebuild.as_mut().filter(|run| run.is_running()) {
                     match event {
                         rebuild::Event::Inspected(status) => self.working_copy = status,
-                        rebuild::Event::Lines(lines) => run.append(lines),
+                        rebuild::Event::Lines(lines) => {
+                            let removed_bytes = run.append(lines);
+                            self.overview.update_journal(run, removed_bytes);
+                        }
                         rebuild::Event::Finished(outcome) => {
                             run.outcome = Some(outcome);
+                            self.overview.set_rebuild_error(&self.i18n, Some(run));
                             return self.inspect_repository();
                         }
                     }
@@ -235,11 +236,15 @@ impl App {
                             || previous.flake_directory != config.flake_directory
                     }) {
                         self.rebuild = None;
+                        self.overview.journal = Default::default();
                     }
                     self.config = Some(config);
                     self.load_error = false;
                     self.screen = Screen::Overview;
                     self.download = overview::DownloadStatus::Idle;
+                    self.overview.set_download_error(&self.i18n, &self.download);
+                    self.overview
+                        .set_rebuild_error(&self.i18n, self.rebuild.as_ref());
                     self.working_copy = git::WorkingCopy::default();
                     self.invalidate_repository_check();
                     return self.inspect_repository();
@@ -276,7 +281,9 @@ impl App {
         let flake_directory = config.flake_directory.clone();
         let mode = self.mode;
         self.rebuild = Some(rebuild::Run::new(mode));
-        self.journal_expanded = true;
+        self.overview.journal_expanded = true;
+        self.overview.journal = Default::default();
+        self.overview.set_rebuild_error(&self.i18n, None);
         self.invalidate_repository_check();
         Task::run(
             stream::channel(16, async move |mut sender| {
@@ -360,7 +367,7 @@ impl App {
                         self.loading,
                         self.load_error,
                         self.rebuild.as_ref(),
-                        self.journal_expanded,
+                        &self.overview,
                     )
                     .map(Message::Overview),
                 )
