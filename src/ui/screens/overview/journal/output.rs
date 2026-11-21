@@ -13,12 +13,14 @@ use super::Message;
 use crate::ui::style::spacing;
 
 mod log;
+mod scroll;
 
 use log::Log;
 
 #[derive(Default)]
 pub struct Output {
     log: RefCell<Log>,
+    scroll: scroll::Position,
 }
 
 impl Output {
@@ -31,7 +33,8 @@ impl Output {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        Element::new(View { output: self })
+        self.scroll
+            .view(Element::new(View { output: self }), &self.log)
     }
 }
 

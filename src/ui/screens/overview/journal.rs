@@ -1,7 +1,7 @@
 use fluent_bundle::FluentArgs;
 use iced::{
-    Center, Color, Element, Fill, Font, Shrink,
-    widget::{button, column, container, row, scrollable, space, text},
+    Center, Color, Element, Fill, Font,
+    widget::{button, column, container, row, space, text},
 };
 
 use super::{Message, State, selection};
@@ -77,11 +77,7 @@ pub fn view<'a>(i18n: &I18n, run: Option<&Run>, state: &'a State) -> Element<'a,
 
 fn log<'a>(i18n: &I18n, state: &'a State) -> Element<'a, Message> {
     let log: Element<'_, Message> = if state.has_journal() {
-        scrollable(state.journal.view())
-            .width(Fill)
-            .height(Shrink)
-            .anchor_bottom()
-            .into()
+        state.journal.view()
     } else {
         container(
             text(i18n.text("overview-journal-empty"))

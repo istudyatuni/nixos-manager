@@ -224,7 +224,7 @@ impl Log {
         (anchor != end).then(|| anchor.min(end)..anchor.max(end))
     }
 
-    fn top(&self) -> f64 {
+    pub(super) fn top(&self) -> f64 {
         self.lines.front().map_or(self.bottom, |line| line.top)
     }
 
