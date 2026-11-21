@@ -345,8 +345,6 @@ impl App {
                             working_copy: self.working_copy,
                             busy: self.is_busy(),
                             download: &self.download,
-                            rebuild: self.rebuild.as_ref(),
-                            journal_expanded: self.journal_expanded,
                         });
                 (
                     self.title(),
@@ -358,6 +356,8 @@ impl App {
                         self.mode,
                         self.loading,
                         self.load_error,
+                        self.rebuild.as_ref(),
+                        self.journal_expanded,
                     )
                     .map(Message::Overview),
                 )

@@ -39,4 +39,5 @@ overview-rebuild-invalid-path = Could not use the repository path as a flake ref
 overview-show-journal = Show log
 overview-hide-journal = Hide log
 overview-copy-journal = Copy log
+overview-journal-empty = Build output will appear here.
 overview-copy-error = Copy error

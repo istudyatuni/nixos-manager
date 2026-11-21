@@ -1,6 +1,6 @@
 use fluent_bundle::FluentArgs;
 use iced::{
-    Center, Element, Fill, Font, Shrink,
+    Center, Element, Fill, Font, Padding, Shrink,
     widget::{button, column, container, row, scrollable, text},
 };
 use std::{borrow::Cow, path::Path};
@@ -63,8 +63,6 @@ pub struct Repository<'a> {
     pub working_copy: git::WorkingCopy,
     pub busy: bool,
     pub download: &'a DownloadStatus,
-    pub rebuild: Option<&'a rebuild::Run>,
-    pub journal_expanded: bool,
 }
 
 pub fn view<'a>(
@@ -73,27 +71,11 @@ pub fn view<'a>(
     mode: Mode,
     loading: bool,
     load_error: bool,
+    rebuild: Option<&rebuild::Run>,
+    journal_expanded: bool,
 ) -> Element<'a, Message> {
-    let content = match repository {
-        Some(repository) => {
-            let run = repository.rebuild;
-            let journal_expanded = repository.journal_expanded;
-            let controls = configured(i18n, repository, mode);
-            if let Some(run) = run {
-                let controls = container(scrollable(controls).height(Shrink)).max_height(230);
-                let page = column![controls, journal::view(i18n, run, journal_expanded)]
-                    .width(Fill)
-                    .height(Fill)
-                    .spacing(spacing::LG)
-                    .align_x(Center);
-                return container(container(page).width(Fill).max_width(CARD_WIDTH))
-                    .padding([spacing::LG, spacing::PAGE_PADDING])
-                    .center_x(Fill)
-                    .height(Fill)
-                    .into();
-            }
-            controls
-        }
+    let controls = match repository {
+        Some(repository) => configured(i18n, repository, mode),
         None => {
             let prompt = if loading {
                 "app-loading-settings"
@@ -113,21 +95,25 @@ pub fn view<'a>(
                 );
             }
 
-            container(content).max_width(520).into()
+            container(content).center_x(Fill).into()
         }
     };
 
-    container(
-        scrollable(
-            container(content)
-                .padding(spacing::PAGE_PADDING)
-                .center_x(Fill),
-        )
-        .height(Shrink)
-        .width(Fill),
-    )
-    .center(Fill)
-    .into()
+    let controls = container(scrollable(controls).height(Shrink)).max_height(230);
+    let page = column![controls, journal::view(i18n, rebuild, journal_expanded)]
+        .width(Fill)
+        .height(Fill)
+        .spacing(spacing::LG)
+        .align_x(Center);
+
+    container(container(page).width(Fill).max_width(CARD_WIDTH))
+        .padding(Padding {
+            bottom: spacing::LG,
+            ..spacing::PAGE_PADDING.into()
+        })
+        .center_x(Fill)
+        .height(Fill)
+        .into()
 }
 
 fn configured<'a>(i18n: &I18n, repository: Repository<'a>, mode: Mode) -> Element<'a, Message> {
@@ -183,11 +169,7 @@ fn configured<'a>(i18n: &I18n, repository: Repository<'a>, mode: Mode) -> Elemen
     .spacing(spacing::MD);
 
     let mut content = column![location, modes, hint, actions]
-        .spacing(if repository.rebuild.is_some() {
-            spacing::MD
-        } else {
-            spacing::XL
-        })
+        .spacing(spacing::MD)
         .width(Fill)
         .align_x(Center);
 

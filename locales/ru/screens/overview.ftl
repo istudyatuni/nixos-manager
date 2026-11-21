@@ -39,4 +39,5 @@ overview-rebuild-invalid-path = Не удалось использовать п�
 overview-show-journal = Развернуть журнал
 overview-hide-journal = Свернуть журнал
 overview-copy-journal = Копировать журнал
+overview-journal-empty = Здесь появится вывод сборки.
 overview-copy-error = Копировать ошибку
