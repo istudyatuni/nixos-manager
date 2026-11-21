@@ -1,33 +1,21 @@
 use std::{
-    collections::VecDeque,
     ffi::{OsStr, OsString},
-    fs::File,
-    io::{self, Write},
     os::unix::ffi::OsStrExt,
-    path::{Path, PathBuf},
-    process::Stdio,
+    path::Path,
 };
 
-use rustix::{
-    fs::{Access, access},
-    process::{ioctl_tiocsctty, setsid},
-    pty::{OpenptFlags, ioctl_tiocgptpeer, openpt, unlockpt},
-    termios::{LocalModes, OptionalActions, SpecialCodeIndex, tcgetattr, tcsetattr},
-};
-use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, BufReader},
-    net::unix::pipe,
-    process::{Child, Command},
-    sync::mpsc,
-};
+use rustix::fs::{Access, access};
+use tokio::{fs, process::Command, sync::mpsc};
 use url::Url;
 
-use crate::git::{self, WorkingCopy};
+use crate::{
+    command_runner::{CommandRunner, RunError},
+    config::Config,
+    git::{self, WorkingCopy},
+};
 
 pub const PKEXEC: &str = "/run/wrappers/bin/pkexec";
 pub const NIXOS_REBUILD: &str = "/run/current-system/sw/bin/nixos-rebuild";
-const LOG_CAPACITY: usize = 10_000;
-const INTERRUPT_CHAR: u8 = 3;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -87,7 +75,6 @@ pub enum Outcome {
 #[derive(Clone)]
 pub enum Event {
     Inspected(WorkingCopy),
-    Lines(Vec<String>),
     InterruptFailed,
     Finished(Outcome),
 }
@@ -96,7 +83,6 @@ pub struct Run {
     pub mode: Mode,
     pub outcome: Option<Outcome>,
     pub interrupting: bool,
-    lines: VecDeque<String>,
 }
 
 impl Run {
@@ -105,73 +91,39 @@ impl Run {
             mode,
             outcome: None,
             interrupting: false,
-            lines: VecDeque::new(),
         }
     }
 
     pub fn is_running(&self) -> bool {
         self.outcome.is_none()
     }
-
-    /// Appends lines and returns the byte length of the removed prefix in the journal text.
-    pub fn append(&mut self, lines: Vec<String>) -> usize {
-        self.lines.extend(lines);
-        let old_lines = self.lines.len().saturating_sub(LOG_CAPACITY);
-        self.lines
-            .drain(..old_lines)
-            .map(|line| line.len() + 1)
-            .sum()
-    }
-
-    pub fn has_lines(&self) -> bool {
-        !self.lines.is_empty()
-    }
-
-    pub fn journal(&self) -> String {
-        let mut output = String::new();
-        for (index, line) in self.lines.iter().enumerate() {
-            if index != 0 {
-                output.push('\n');
-            }
-            output.push_str(line);
-        }
-        output
-    }
 }
 
 pub async fn run<F: Future<Output = ()> + Send>(
-    path: PathBuf,
-    repository: String,
-    branch: String,
-    flake_directory: PathBuf,
+    runner: &CommandRunner,
+    config: &Config,
     mode: Mode,
     mut interrupt: mpsc::Receiver<()>,
     mut emit: impl FnMut(Event) -> F + Send,
 ) -> Outcome {
-    let mut inspection = tokio::task::spawn_blocking(move || {
-        let status = git::inspect(&path, &repository, &branch)?;
+    let inspection = async {
+        let status = git::inspect(runner, config).await?;
         let flake = if status.matches_revision {
-            flake_reference(&path, &flake_directory)
+            flake_reference(&config.path, &config.flake_directory).await
         } else {
             Err(Outcome::Unsynced)
         };
-        Ok((status, flake))
-    });
-    let check = tokio::select! {
+        Ok::<_, git::Error>((status, flake))
+    };
+    let result = tokio::select! {
         biased;
         Some(()) = interrupt.recv() => return Outcome::Interrupted,
-        result = &mut inspection => result,
+        result = inspection => result,
     };
-
-    let (status, flake) = match check {
-        Ok(Ok(inspection)) => inspection,
-        failure => {
+    let (status, flake) = match result {
+        Ok(inspection) => inspection,
+        Err(_) => {
             emit(Event::Inspected(WorkingCopy::default())).await;
-            match failure {
-                Ok(Err(git::Error::Inspect(detail))) => emit(Event::Lines(vec![detail])).await,
-                Err(error) => emit(Event::Lines(vec![error.to_string()])).await,
-                _ => {}
-            }
             return Outcome::InvalidRepository;
         }
     };
@@ -200,26 +152,41 @@ pub async fn run<F: Future<Output = ()> + Send>(
             "--flake",
         ])
         .arg(selector);
-    execute(command, interrupt, emit).await
+    match runner
+        .interruptible(command, interrupt, || emit(Event::InterruptFailed))
+        .await
+    {
+        Ok(status) => match status.code() {
+            Some(0) => Outcome::Success,
+            Some(126) => Outcome::Cancelled,
+            Some(127) => Outcome::AuthorizationFailed,
+            Some(code) => Outcome::Exited(code),
+            None => Outcome::Interrupted,
+        },
+        Err(RunError::Interrupted) => Outcome::Interrupted,
+        Err(RunError::Launch) => Outcome::LaunchFailed,
+        Err(RunError::Wait) => Outcome::WaitFailed,
+    }
 }
 
-fn flake_reference(repository: &Path, directory: &Path) -> Result<OsString, Outcome> {
-    let root = repository
-        .canonicalize()
+async fn flake_reference(repository: &Path, directory: &Path) -> Result<OsString, Outcome> {
+    let root = fs::canonicalize(repository)
+        .await
         .map_err(|_| Outcome::InvalidPath)?;
-    let path = root
-        .join(directory)
-        .canonicalize()
+    let path = fs::canonicalize(root.join(directory))
+        .await
         .map_err(|_| Outcome::MissingFlake)?;
     let relative = path.strip_prefix(&root).map_err(|_| Outcome::InvalidPath)?;
-    let file = path
-        .join("flake.nix")
-        .canonicalize()
+    let file = fs::canonicalize(path.join("flake.nix"))
+        .await
         .map_err(|_| Outcome::MissingFlake)?;
     if !file.starts_with(&root) {
         return Err(Outcome::InvalidPath);
     }
-    if !file.is_file() {
+    if !fs::metadata(file)
+        .await
+        .is_ok_and(|metadata| metadata.is_file())
+    {
         return Err(Outcome::MissingFlake);
     }
 
@@ -237,131 +204,4 @@ fn flake_reference(repository: &Path, directory: &Path) -> Result<OsString, Outc
         url.set_query(Some(&format!("dir={dir}")));
     }
     Ok(format!("git+{url}").into())
-}
-
-async fn execute<F: Future<Output = ()> + Send>(
-    mut command: Command,
-    mut interrupt: mpsc::Receiver<()>,
-    mut emit: impl FnMut(Event) -> F + Send,
-) -> Outcome {
-    if interrupt.try_recv().is_ok() {
-        return Outcome::Interrupted;
-    }
-    let mut terminal = match attach_terminal(&mut command) {
-        Ok(terminal) => terminal,
-        Err(error) => {
-            emit(Event::Lines(vec![error.to_string()])).await;
-            return Outcome::LaunchFailed;
-        }
-    };
-    let (mut child, output) = match spawn_with_output(&mut command) {
-        Ok(process) => process,
-        Err(error) => {
-            emit(Event::Lines(vec![error.to_string()])).await;
-            return Outcome::LaunchFailed;
-        }
-    };
-
-    const BATCH_SIZE: usize = 128;
-    let (sender, mut receiver) = mpsc::channel(BATCH_SIZE);
-    tokio::spawn(read_lines(output, sender));
-
-    let mut batch = Vec::new();
-    let mut output_open = true;
-    let mut interrupt_sent = false;
-    let mut status = None;
-    while output_open || status.is_none() {
-        tokio::select! {
-            result = child.wait(), if status.is_none() => status = Some(result),
-            Some(()) = interrupt.recv(), if !interrupt_sent && status.is_none() => {
-                match terminal.write_all(&[INTERRUPT_CHAR]) {
-                    Ok(()) => interrupt_sent = true,
-                    Err(error) => {
-                        emit(Event::Lines(vec![error.to_string()])).await;
-                        emit(Event::InterruptFailed).await;
-                    }
-                }
-            }
-            count = receiver.recv_many(&mut batch, BATCH_SIZE), if output_open => {
-                if count == 0 {
-                    output_open = false;
-                } else {
-                    emit(Event::Lines(std::mem::take(&mut batch))).await;
-                }
-            }
-        }
-    }
-
-    match status.expect("the process has exited and its output has closed") {
-        Ok(status) if interrupt_sent && !status.success() => Outcome::Interrupted,
-        Ok(status) => match status.code() {
-            Some(0) => Outcome::Success,
-            Some(126) => Outcome::Cancelled,
-            Some(127) => Outcome::AuthorizationFailed,
-            Some(code) => Outcome::Exited(code),
-            None => Outcome::Interrupted,
-        },
-        Err(error) => {
-            emit(Event::Lines(vec![error.to_string()])).await;
-            Outcome::WaitFailed
-        }
-    }
-}
-
-fn spawn_with_output(command: &mut Command) -> io::Result<(Child, pipe::Receiver)> {
-    // A shared pipe preserves write order across stdout and stderr.
-    let (reader, writer) = io::pipe()?;
-    let output = pipe::Receiver::from_owned_fd(reader.into())?;
-    let child = command
-        .stdin(Stdio::null())
-        .stdout(writer.try_clone()?)
-        .stderr(writer)
-        .spawn();
-
-    // The builder retains its copies of the write ends after spawn.
-    command.stdout(Stdio::null()).stderr(Stdio::null());
-    Ok((child?, output))
-}
-
-fn attach_terminal(command: &mut Command) -> io::Result<File> {
-    let flags = OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC;
-    let terminal = openpt(flags)?;
-    unlockpt(&terminal)?;
-    let peer = ioctl_tiocgptpeer(&terminal, flags)?;
-    let mut settings = tcgetattr(&peer)?;
-    settings.local_modes.insert(LocalModes::ISIG);
-    settings.local_modes.remove(LocalModes::ECHO);
-    settings.special_codes[SpecialCodeIndex::VINTR] = INTERRUPT_CHAR;
-    tcsetattr(&peer, OptionalActions::Now, &settings)?;
-
-    // SAFETY: The child hook performs only async-signal-safe syscalls on the
-    // already-open PTY. Both descriptors are close-on-exec.
-    unsafe {
-        command.pre_exec(move || {
-            setsid()?;
-            ioctl_tiocsctty(&peer)?;
-            Ok(())
-        });
-    }
-    Ok(File::from(terminal))
-}
-
-async fn read_lines(reader: impl AsyncRead + Unpin, sender: mpsc::Sender<String>) {
-    let mut lines = BufReader::new(reader).split(b'\n');
-    loop {
-        let line = match lines.next_segment().await {
-            Ok(Some(bytes)) => {
-                let bytes = bytes.strip_suffix(b"\r").unwrap_or(&bytes);
-                String::from_utf8_lossy(bytes).into_owned()
-            }
-            Ok(None) => break,
-            Err(error) => {
-                let _ = sender.send(error.to_string()).await;
-                break;
-            }
-        };
-        if sender.send(line).await.is_err() {
-            break;
-        }
-    }
 }

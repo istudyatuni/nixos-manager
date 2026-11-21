@@ -1,13 +1,16 @@
 use std::{
-    env, fs,
+    env,
     io::{self, BufRead, Write},
     path::Path,
-    process::{Command, Stdio},
 };
 
-use tempfile::Builder;
+use tempfile::{Builder, TempDir};
+use tokio::{fs, process::Command};
 
-use crate::config::{Config, github_url};
+use crate::{
+    command_runner::CommandRunner,
+    config::{Config, github_url},
+};
 
 pub const CREDENTIAL_HELPER_FLAG: &str = "--git-credential-helper";
 const HELPER_EXECUTABLE: &str = "NIXOS_MANAGER_CREDENTIAL_EXECUTABLE";
@@ -28,10 +31,10 @@ pub enum Error {
     Revision,
 }
 
-pub fn available() -> bool {
-    command()
-        .arg("--version")
-        .output()
+pub async fn available(runner: &CommandRunner) -> bool {
+    runner
+        .output(command().arg("--version"))
+        .await
         .is_ok_and(|output| output.status.success())
 }
 
@@ -43,15 +46,21 @@ pub struct WorkingCopy {
     pub matches_revision: bool,
 }
 
-pub fn inspect(path: &Path, repository: &str, branch: &str) -> Result<WorkingCopy, Error> {
-    check_worktree(path, repository)?;
-    let has_local_changes = worktree_dirty(path)?;
-    let current_branch = current_branch(path).ok();
-    let head = revision(path, "HEAD").ok();
-    let matches_revision = current_branch.as_deref() == Some(branch.as_bytes())
-        && head.as_ref().is_some_and(|head| {
-            revision(path, &tracking_ref(branch)).is_ok_and(|expected| *head == expected)
-        });
+pub async fn inspect(runner: &CommandRunner, config: &Config) -> Result<WorkingCopy, Error> {
+    let path = &config.path;
+    check_worktree(runner, path, &config.repository).await?;
+    let has_local_changes = worktree_dirty(runner, path).await?;
+    let current_branch = current_branch(runner, path).await.ok();
+    let head = revision(runner, path, "HEAD").await.ok();
+    let matches_revision = if current_branch.as_deref() == Some(config.branch.as_bytes())
+        && let Some(head) = &head
+    {
+        revision(runner, path, &tracking_ref(&config.branch))
+            .await
+            .is_ok_and(|expected| *head == expected)
+    } else {
+        false
+    };
     Ok(WorkingCopy {
         branch: current_branch.map(|branch| String::from_utf8_lossy(&branch).into_owned()),
         commit: head.as_deref().map(short_commit),
@@ -60,12 +69,14 @@ pub fn inspect(path: &Path, repository: &str, branch: &str) -> Result<WorkingCop
     })
 }
 
-pub fn download(config: &Config) -> Result<WorkingCopy, Error> {
+pub async fn download(runner: &CommandRunner, config: &Config) -> Result<WorkingCopy, Error> {
     let tracking_ref = tracking_ref(&config.branch);
 
-    let head = match fs::symlink_metadata(&config.path) {
-        Ok(_) => synchronize(config, &tracking_ref),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => clone(config, &tracking_ref),
+    let head = match fs::symlink_metadata(&config.path).await {
+        Ok(_) => synchronize(runner, config, &tracking_ref).await,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            clone(runner, config, &tracking_ref).await
+        }
         Err(_) => Err(Error::Path),
     }?;
     Ok(WorkingCopy {
@@ -76,15 +87,32 @@ pub fn download(config: &Config) -> Result<WorkingCopy, Error> {
     })
 }
 
-fn clone(config: &Config, tracking_ref: &str) -> Result<Vec<u8>, Error> {
-    let parent = config.path.parent().ok_or(Error::Path)?;
-    fs::create_dir_all(parent).map_err(|_| Error::Path)?;
-    let staging = Builder::new()
-        .prefix(".nixos-manager-")
-        .tempdir_in(parent)
-        .map_err(|_| Error::Path)?;
+async fn clone(
+    runner: &CommandRunner,
+    config: &Config,
+    tracking_ref: &str,
+) -> Result<Vec<u8>, Error> {
+    let parent = config.path.parent().ok_or(Error::Path)?.to_owned();
+    fs::create_dir_all(&parent).await.map_err(|_| Error::Path)?;
+    let staging = tokio::task::spawn_blocking(move || {
+        Builder::new().prefix(".nixos-manager-").tempdir_in(parent)
+    })
+    .await
+    .map_err(|_| Error::Path)?
+    .map_err(|_| Error::Path)?;
+    let result = clone_in(runner, config, tracking_ref, &staging).await;
+    let _ = tokio::task::spawn_blocking(move || drop(staging)).await;
+    result
+}
 
+async fn clone_in(
+    runner: &CommandRunner,
+    config: &Config,
+    tracking_ref: &str,
+    staging: &TempDir,
+) -> Result<Vec<u8>, Error> {
     let resolved = run(
+        runner,
         command().current_dir(staging.path()).args([
             "ls-remote",
             "--get-url",
@@ -92,12 +120,13 @@ fn clone(config: &Config, tracking_ref: &str) -> Result<Vec<u8>, Error> {
             &config.repository,
         ]),
         Error::Clone,
-        &config.token,
-    )?;
+    )
+    .await?;
     let remote = matching_remote(&resolved, &config.repository)?;
     let mut git = network_command(staging.path(), config, remote)?;
     git.args([
         "clone",
+        "--progress",
         "--no-checkout",
         "--single-branch",
         "--no-tags",
@@ -109,31 +138,39 @@ fn clone(config: &Config, tracking_ref: &str) -> Result<Vec<u8>, Error> {
         &config.repository,
     ])
     .arg(staging.path());
-    run(&mut git, Error::Clone, &config.token)?;
+    run(runner, &mut git, Error::Clone).await?;
 
-    check_worktree(staging.path(), &config.repository)?;
-    let head = checkout(staging.path(), config, tracking_ref)?;
+    check_worktree(runner, staging.path(), &config.repository).await?;
+    let head = checkout(runner, staging.path(), config, tracking_ref).await?;
 
     // Publish the clone only after checkout succeeds. Renaming a directory cannot
     // overwrite another clone because that destination contains .git.
-    match fs::symlink_metadata(&config.path) {
+    match fs::symlink_metadata(&config.path).await {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            fs::rename(staging.path(), &config.path).map_err(|_| Error::Path)?;
+            fs::rename(staging.path(), &config.path)
+                .await
+                .map_err(|_| Error::Path)?;
             Ok(head)
         }
         _ => Err(Error::Path),
     }
 }
 
-fn synchronize(config: &Config, tracking_ref: &str) -> Result<Vec<u8>, Error> {
-    let remote = check_worktree(&config.path, &config.repository)?;
-    require_clean(&config.path)?;
+async fn synchronize(
+    runner: &CommandRunner,
+    config: &Config,
+    tracking_ref: &str,
+) -> Result<Vec<u8>, Error> {
+    let remote = check_worktree(runner, &config.path, &config.repository).await?;
+    require_clean(runner, &config.path).await?;
 
     let refspec = format!("refs/heads/{}:{tracking_ref}", config.branch);
     let mut git = network_command(&config.path, config, &remote)?;
     run(
+        runner,
         git.args([
             "fetch",
+            "--progress",
             "--force",
             "--no-tags",
             "--no-prune",
@@ -144,16 +181,22 @@ fn synchronize(config: &Config, tracking_ref: &str) -> Result<Vec<u8>, Error> {
             &refspec,
         ]),
         Error::Fetch,
-        &config.token,
-    )?;
+    )
+    .await?;
 
-    require_clean(&config.path)?;
-    checkout(&config.path, config, tracking_ref)
+    require_clean(runner, &config.path).await?;
+    checkout(runner, &config.path, config, tracking_ref).await
 }
 
-fn checkout(path: &Path, config: &Config, tracking_ref: &str) -> Result<Vec<u8>, Error> {
-    let expected = revision(path, tracking_ref)?;
+async fn checkout(
+    runner: &CommandRunner,
+    path: &Path,
+    config: &Config,
+    tracking_ref: &str,
+) -> Result<Vec<u8>, Error> {
+    let expected = revision(runner, path, tracking_ref).await?;
     run(
+        runner,
         command().current_dir(path).args([
             "checkout",
             "--no-overwrite-ignore",
@@ -164,12 +207,12 @@ fn checkout(path: &Path, config: &Config, tracking_ref: &str) -> Result<Vec<u8>,
             "--",
         ]),
         Error::Checkout,
-        &config.token,
-    )?;
+    )
+    .await?;
 
-    if current_branch(path)? != config.branch.as_bytes()
-        || revision(path, "HEAD")? != expected
-        || revision(path, tracking_ref)? != expected
+    if current_branch(runner, path).await? != config.branch.as_bytes()
+        || revision(runner, path, "HEAD").await? != expected
+        || revision(runner, path, tracking_ref).await? != expected
     {
         return Err(Error::Revision);
     }
@@ -180,28 +223,30 @@ fn tracking_ref(branch: &str) -> String {
     format!("refs/remotes/origin/{branch}")
 }
 
-fn current_branch(path: &Path) -> Result<Vec<u8>, Error> {
+async fn current_branch(runner: &CommandRunner, path: &Path) -> Result<Vec<u8>, Error> {
     let head = run(
+        runner,
         command()
             .current_dir(path)
             .args(["symbolic-ref", "--quiet", "HEAD"]),
         |_| Error::Revision,
-        "",
-    )?;
+    )
+    .await?;
     head.strip_prefix(b"refs/heads/")
         .and_then(|branch| branch.strip_suffix(b"\n"))
         .map(<[u8]>::to_vec)
         .ok_or(Error::Revision)
 }
 
-fn revision(path: &Path, reference: &str) -> Result<Vec<u8>, Error> {
+async fn revision(runner: &CommandRunner, path: &Path, reference: &str) -> Result<Vec<u8>, Error> {
     run(
+        runner,
         command()
             .current_dir(path)
             .args(["rev-parse", "--verify", reference]),
         |_| Error::Revision,
-        "",
     )
+    .await
 }
 
 fn short_commit(revision: &[u8]) -> String {
@@ -209,36 +254,46 @@ fn short_commit(revision: &[u8]) -> String {
     String::from_utf8_lossy(&revision[..revision.len().min(12)]).into_owned()
 }
 
-fn check_worktree(path: &Path, repository: &str) -> Result<String, Error> {
-    if !path.is_dir() {
+async fn check_worktree(
+    runner: &CommandRunner,
+    path: &Path,
+    repository: &str,
+) -> Result<String, Error> {
+    if !fs::metadata(path)
+        .await
+        .is_ok_and(|metadata| metadata.is_dir())
+    {
         return Err(Error::Path);
     }
     let mut git = command();
     git.current_dir(path);
     let root = run(
+        runner,
         git.args(["rev-parse", "--is-inside-work-tree", "--show-prefix"]),
         |_| Error::NotRepository,
-        "",
-    )?;
+    )
+    .await?;
     if root != b"true\n\n" {
         return Err(Error::NotRepository);
     }
 
     let configured = run(
+        runner,
         command()
             .current_dir(path)
             .args(["config", "--get-all", "remote.origin.url"]),
         |_| Error::Origin,
-        "",
-    )?;
+    )
+    .await?;
     matching_remote(&configured, repository)?;
     let resolved = run(
+        runner,
         command()
             .current_dir(path)
             .args(["remote", "get-url", "--all", "origin"]),
         |_| Error::Origin,
-        "",
-    )?;
+    )
+    .await?;
     matching_remote(&resolved, repository).map(str::to_owned)
 }
 
@@ -274,15 +329,16 @@ fn same_repository_path(first: &str, second: &str) -> bool {
         .eq_ignore_ascii_case(name(second.strip_prefix('/').unwrap_or(second)))
 }
 
-fn require_clean(path: &Path) -> Result<(), Error> {
-    if worktree_dirty(path)? {
+async fn require_clean(runner: &CommandRunner, path: &Path) -> Result<(), Error> {
+    if worktree_dirty(runner, path).await? {
         return Err(Error::LocalChanges);
     }
     Ok(())
 }
 
-fn worktree_dirty(path: &Path) -> Result<bool, Error> {
+async fn worktree_dirty(runner: &CommandRunner, path: &Path) -> Result<bool, Error> {
     let output = run(
+        runner,
         command().current_dir(path).args([
             "--no-optional-locks",
             "status",
@@ -292,14 +348,13 @@ fn worktree_dirty(path: &Path) -> Result<bool, Error> {
             "--ignore-submodules=none",
         ]),
         Error::Inspect,
-        "",
-    )?;
+    )
+    .await?;
     Ok(!output.is_empty())
 }
 
 fn command() -> Command {
     let mut git = Command::new("git");
-    git.stdin(Stdio::null());
     for key in [
         "GIT_ALTERNATE_OBJECT_DIRECTORIES",
         "GIT_COMMON_DIR",
@@ -400,23 +455,17 @@ pub fn write_credential() -> io::Result<()> {
     Ok(())
 }
 
-fn run(
+async fn run(
+    runner: &CommandRunner,
     command: &mut Command,
     failure: impl FnOnce(String) -> Error,
-    token: &str,
 ) -> Result<Vec<u8>, Error> {
-    match command.output() {
+    match runner.output(command).await {
         Ok(output) if output.status.success() => Ok(output.stdout),
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let detail = if token.is_empty() {
-                stderr.trim().to_owned()
-            } else {
-                stderr.trim().replace(token, "***")
-            };
-            Err(failure(detail))
-        }
+        Ok(output) => Err(failure(
+            runner.redact(String::from_utf8_lossy(&output.stderr).trim()),
+        )),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Err(Error::Unavailable),
-        Err(error) => Err(failure(error.to_string())),
+        Err(error) => Err(failure(runner.redact(&error.to_string()))),
     }
 }

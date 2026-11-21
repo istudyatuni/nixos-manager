@@ -57,7 +57,7 @@ pub fn view<'a>(i18n: &I18n, run: Option<&Run>, state: &'a State) -> Element<'a,
         content = content.push(status);
     }
     if state.journal_expanded {
-        content = content.push(log(i18n, run, state));
+        content = content.push(log(i18n, state));
     }
 
     container(content)
@@ -67,8 +67,8 @@ pub fn view<'a>(i18n: &I18n, run: Option<&Run>, state: &'a State) -> Element<'a,
         .into()
 }
 
-fn log<'a>(i18n: &I18n, run: Option<&Run>, state: &'a State) -> Element<'a, Message> {
-    let output = if run.is_some_and(Run::has_lines) {
+fn log<'a>(i18n: &I18n, state: &'a State) -> Element<'a, Message> {
+    let output = if state.has_journal() {
         selection::view(
             &state.journal,
             selection::Target::Journal,

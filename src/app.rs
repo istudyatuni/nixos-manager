@@ -2,7 +2,7 @@ use std::{env, path::PathBuf, time::Duration};
 
 use iced::{
     Center, Element, Fill, Subscription, Task, Theme,
-    futures::SinkExt,
+    futures::{SinkExt, stream::unfold},
     stream, time,
     widget::{button, column, container, row, space, text},
     window,
@@ -10,6 +10,7 @@ use iced::{
 use tokio::sync::mpsc;
 
 use crate::{
+    command_runner::{CommandRunner, LogLine},
     config::{self, Config, LoadError, SaveError},
     git,
     i18n::I18n,
@@ -37,6 +38,7 @@ pub struct App {
     rebuild_interrupt: Option<mpsc::Sender<()>>,
     pending_close: Option<window::Id>,
     overview: overview::State,
+    commands: CommandRunner,
     checking_repository: bool,
     repository_generation: u64,
 }
@@ -51,6 +53,7 @@ pub enum Message {
     Loaded(Result<Option<Config>, LoadError>, bool, rebuild::Tools),
     Saved(Result<Config, SaveError>),
     Downloaded(Result<git::WorkingCopy, git::Error>),
+    CommandLogs(Vec<LogLine>),
     Rebuild(rebuild::Event),
     InspectRepository,
     RepositoryInspected(u64, git::WorkingCopy),
@@ -58,6 +61,7 @@ pub enum Message {
 
 impl App {
     pub fn boot() -> (Self, Task<Message>) {
+        let (journal, receiver) = mpsc::channel(256);
         let app = Self {
             screen: Screen::Overview,
             i18n: I18n::system(),
@@ -75,22 +79,36 @@ impl App {
             rebuild_interrupt: None,
             pending_close: None,
             overview: overview::State::default(),
+            commands: CommandRunner::new(journal),
             checking_repository: false,
             repository_generation: 0,
         };
-        let task = Task::perform(
-            async {
-                tokio::task::spawn_blocking(|| {
-                    (config::load(), git::available(), rebuild::Tools::detect())
-                })
-                .await
-                .unwrap_or((Err(LoadError), false, rebuild::Tools::default()))
+        let runner = app.commands.clone();
+        let load = Task::perform(
+            async move {
+                let (result, rebuild_tools) =
+                    tokio::task::spawn_blocking(|| (config::load(), rebuild::Tools::detect()))
+                        .await
+                        .unwrap_or((Err(LoadError), rebuild::Tools::default()));
+                let runner = match &result {
+                    Ok(Some(config)) => runner.with_secret(config.token.clone()),
+                    _ => runner,
+                };
+                let git_available = git::available(&runner).await;
+                (result, git_available, rebuild_tools)
             },
             |(result, git_available, rebuild_tools)| {
                 Message::Loaded(result, git_available, rebuild_tools)
             },
         );
-        (app, task)
+        let journal = Task::run(
+            unfold(receiver, |mut receiver| async move {
+                let mut lines = Vec::new();
+                (receiver.recv_many(&mut lines, 128).await != 0).then_some((lines, receiver))
+            }),
+            Message::CommandLogs,
+        );
+        (app, Task::batch([load, journal]))
     }
 
     pub fn title(&self) -> String {
@@ -154,12 +172,9 @@ impl App {
                     self.overview.set_download_error(&self.i18n, &self.download);
                     self.working_copy.matches_revision = false;
                     self.invalidate_repository_check();
+                    let runner = self.commands.clone().with_secret(config.token.clone());
                     return Task::perform(
-                        async move {
-                            tokio::task::spawn_blocking(move || git::download(&config))
-                                .await
-                                .unwrap_or_else(|error| Err(git::Error::Inspect(error.to_string())))
-                        },
+                        async move { git::download(&runner, &config).await },
                         Message::Downloaded,
                     );
                 }
@@ -189,14 +204,19 @@ impl App {
             Message::Overview(overview::Message::SelectText(target, action)) => {
                 self.overview.update_selection(target, action);
             }
+            Message::CommandLogs(lines) => {
+                let generation = self.commands.generation();
+                self.overview.append_journal(
+                    lines
+                        .into_iter()
+                        .filter(|line| line.generation == generation)
+                        .map(|line| line.text),
+                );
+            }
             Message::Rebuild(event) => {
                 if let Some(run) = self.rebuild.as_mut().filter(|run| run.is_running()) {
                     match event {
                         rebuild::Event::Inspected(status) => self.working_copy = status,
-                        rebuild::Event::Lines(lines) => {
-                            let removed_bytes = run.append(lines);
-                            self.overview.update_journal(run, removed_bytes);
-                        }
                         rebuild::Event::InterruptFailed => {
                             run.interrupting = false;
                             self.pending_close = None;
@@ -266,7 +286,7 @@ impl App {
                             || previous.flake_directory != config.flake_directory
                     }) {
                         self.rebuild = None;
-                        self.overview.journal = Default::default();
+                        self.clear_journal();
                     }
                     self.config = Some(config);
                     self.load_error = false;
@@ -312,37 +332,26 @@ impl App {
         {
             return Task::none();
         }
-        let Some(config) = &self.config else {
+        let Some(config) = self.config.clone() else {
             return Task::none();
         };
-        let path = config.path.clone();
-        let repository = config.repository.clone();
-        let branch = config.branch.clone();
-        let flake_directory = config.flake_directory.clone();
         let mode = self.mode;
         let (interrupt_request, interrupt) = mpsc::channel(1);
         self.rebuild_interrupt = Some(interrupt_request);
         self.rebuild = Some(rebuild::Run::new(mode));
         self.overview.journal_expanded = true;
-        self.overview.journal = Default::default();
+        self.clear_journal();
         self.overview.set_rebuild_error(&self.i18n, None);
         self.invalidate_repository_check();
+        let runner = self.commands.clone().with_secret(config.token.clone());
         Task::run(
             stream::channel(16, async move |mut sender| {
-                let outcome = rebuild::run(
-                    path,
-                    repository,
-                    branch,
-                    flake_directory,
-                    mode,
-                    interrupt,
-                    |event| {
-                        let mut sender = sender.clone();
-                        async move {
-                            let _ = sender.send(event).await;
-                        }
-                    },
-                )
+                let outcome = rebuild::run(&runner, &config, mode, interrupt, |event| {
+                    let mut sender = sender.clone();
+                    async move {
+                        let _ = sender.send(event).await;
+                    }
+                })
                 .await;
                 let _ = sender.send(rebuild::Event::Finished(outcome)).await;
             }),
@@ -365,22 +374,14 @@ impl App {
         if !self.can_inspect_repository() || self.checking_repository {
             return Task::none();
         }
-        let Some(config) = &self.config else {
+        let Some(config) = self.config.clone() else {
             return Task::none();
         };
-        let path = config.path.clone();
-        let repository = config.repository.clone();
-        let branch = config.branch.clone();
         let generation = self.repository_generation;
+        let runner = self.commands.clone().with_secret(config.token.clone());
         self.checking_repository = true;
         Task::perform(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    git::inspect(&path, &repository, &branch).unwrap_or_default()
-                })
-                .await
-                .unwrap_or_default()
-            },
+            async move { git::inspect(&runner, &config).await.unwrap_or_default() },
             move |status| Message::RepositoryInspected(generation, status),
         )
     }
@@ -388,6 +389,11 @@ impl App {
     fn invalidate_repository_check(&mut self) {
         self.repository_generation += 1;
         self.checking_repository = false;
+    }
+
+    fn clear_journal(&mut self) {
+        self.commands.next_generation();
+        self.overview.clear_journal();
     }
 
     pub fn view(&self) -> Element<'_, Message> {

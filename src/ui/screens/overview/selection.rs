@@ -9,6 +9,8 @@ use iced::{
 use super::{DownloadStatus, Message, download_status_parts, journal};
 use crate::{i18n::I18n, rebuild::Run, ui::style::inputs};
 
+const LOG_CAPACITY: usize = 10_000;
+
 #[derive(Clone, Copy)]
 pub enum Target {
     Journal,
@@ -20,6 +22,7 @@ pub enum Target {
 pub struct State {
     pub journal_expanded: bool,
     pub journal: Content,
+    journal_lines: VecDeque<String>,
     pub rebuild_error: Content,
     pub download_error: Content,
     pub download_detail: Content,
@@ -30,6 +33,7 @@ impl Default for State {
         Self {
             journal_expanded: true,
             journal: Content::new(),
+            journal_lines: VecDeque::new(),
             rebuild_error: Content::new(),
             download_error: Content::new(),
             download_detail: Content::new(),
@@ -52,8 +56,28 @@ impl State {
         content.perform(action);
     }
 
-    pub fn update_journal(&mut self, run: &Run, removed_bytes: usize) {
-        let next = Content::with_text(&run.journal());
+    pub fn has_journal(&self) -> bool {
+        !self.journal_lines.is_empty()
+    }
+
+    pub fn clear_journal(&mut self) {
+        self.journal_lines.clear();
+        self.journal = Content::new();
+    }
+
+    pub fn append_journal(&mut self, lines: impl IntoIterator<Item = String>) {
+        let mut lines = lines.into_iter().peekable();
+        if lines.peek().is_none() {
+            return;
+        }
+        self.journal_lines.extend(lines);
+        let old_lines = self.journal_lines.len().saturating_sub(LOG_CAPACITY);
+        let removed_bytes: usize = self
+            .journal_lines
+            .drain(..old_lines)
+            .map(|line| line.len() + 1)
+            .sum();
+        let next = Content::with_text(&self.journal_lines.make_contiguous().join("\n"));
         let cursor = self.journal.cursor();
         // Translate byte offsets so trimming the log keeps selections on the retained text.
         let translate = |position| {
@@ -142,3 +166,4 @@ fn position_at(content: &Content, mut offset: usize) -> Position {
     }
     position
 }
+use std::collections::VecDeque;
