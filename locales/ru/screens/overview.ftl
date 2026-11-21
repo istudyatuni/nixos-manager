@@ -36,6 +36,7 @@ overview-rebuild-wait-failed = Не удалось определить резу
 overview-rebuild-invalid-repository = Не удалось проверить рабочую копию. Сверьте репозиторий в настройках и загрузите изменения.
 overview-rebuild-hostname = Не удалось определить имя компьютера.
 overview-rebuild-invalid-path = Не удалось использовать путь к репозиторию как ссылку на flake.
+overview-rebuild-missing-flake = В указанной поддиректории не найден flake.nix.
 overview-show-journal = Развернуть журнал
 overview-hide-journal = Свернуть журнал
 overview-copy-journal = Копировать журнал

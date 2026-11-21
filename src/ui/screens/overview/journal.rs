@@ -120,6 +120,7 @@ fn rebuild_status(i18n: &I18n, run: &Run) -> (String, Color) {
         Some(Outcome::Unsynced) => ("overview-rebuild-requires-revision", colors::DANGER),
         Some(Outcome::MissingHostname) => ("overview-rebuild-hostname", colors::DANGER),
         Some(Outcome::InvalidPath) => ("overview-rebuild-invalid-path", colors::DANGER),
+        Some(Outcome::MissingFlake) => ("overview-rebuild-missing-flake", colors::DANGER),
     };
     (i18n.with_args(key, &args), color)
 }

@@ -3,7 +3,7 @@ use std::{
     env, fs,
     io::{self, Write},
     os::unix::fs::PermissionsExt,
-    path::{self, Path, PathBuf},
+    path::{self, Component, Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,7 @@ use crate::i18n::LanguagePreference;
 
 pub const CONFIG_DIRECTORY: &str = ".config/nixos-manager";
 pub const DEFAULT_REPO_PATH: &str = "~/.config/nixos-manager/repo";
+pub const DEFAULT_FLAKE_DIRECTORY: &str = ".";
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -23,6 +24,8 @@ pub struct Config {
     pub token: String,
     pub path: PathBuf,
     pub branch: String,
+    #[serde(default = "default_flake_directory")]
+    pub flake_directory: PathBuf,
 }
 
 impl Default for Config {
@@ -33,6 +36,7 @@ impl Default for Config {
             token: String::new(),
             path: DEFAULT_REPO_PATH.into(),
             branch: String::new(),
+            flake_directory: default_flake_directory(),
         }
     }
 }
@@ -43,6 +47,7 @@ pub enum SaveError {
     Token,
     Path,
     Branch,
+    FlakeDirectory,
     Write,
 }
 
@@ -89,6 +94,8 @@ impl Config {
     }
 
     fn validate(&mut self, home: &Path, repository_required: bool) -> Result<(), SaveError> {
+        self.flake_directory = relative_flake_directory(&self.flake_directory)?;
+
         // Language can be saved before a repository is set up.
         if !repository_required
             && self.repository.is_empty()
@@ -116,6 +123,29 @@ impl Config {
         self.branch = branch.to_owned();
         Ok(())
     }
+}
+
+fn default_flake_directory() -> PathBuf {
+    DEFAULT_FLAKE_DIRECTORY.into()
+}
+
+fn relative_flake_directory(input: &Path) -> Result<PathBuf, SaveError> {
+    if input.as_os_str().as_encoded_bytes().contains(&0) {
+        return Err(SaveError::FlakeDirectory);
+    }
+
+    let mut directory = PathBuf::new();
+    for component in input.components() {
+        match component {
+            Component::Normal(name) => directory.push(name),
+            Component::CurDir => {}
+            _ => return Err(SaveError::FlakeDirectory),
+        }
+    }
+    if directory.as_os_str().is_empty() {
+        return Ok(default_flake_directory());
+    }
+    Ok(directory)
 }
 
 pub fn display_repo_path<'a>(path: &'a Path, home: Option<&Path>) -> Cow<'a, Path> {

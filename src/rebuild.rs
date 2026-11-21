@@ -72,6 +72,7 @@ pub enum Outcome {
     Unsynced,
     MissingHostname,
     InvalidPath,
+    MissingFlake,
 }
 
 #[derive(Clone)]
@@ -126,21 +127,27 @@ pub async fn run<F: Future<Output = ()> + Send>(
     path: PathBuf,
     repository: String,
     branch: String,
+    flake_directory: PathBuf,
     mode: Mode,
     mut emit: impl FnMut(Event) -> F + Send,
 ) -> Outcome {
     let check = tokio::task::spawn_blocking(move || {
-        let result = git::inspect(&path, &repository, &branch);
-        (path, result)
+        let status = git::inspect(&path, &repository, &branch)?;
+        let flake = if status.matches_revision {
+            flake_reference(&path, &flake_directory)
+        } else {
+            Err(Outcome::Unsynced)
+        };
+        Ok((status, flake))
     })
     .await;
 
-    let (path, status) = match check {
-        Ok((path, Ok(status))) => (path, status),
+    let (status, flake) = match check {
+        Ok(Ok(inspection)) => inspection,
         failure => {
             emit(Event::Inspected(WorkingCopy::default())).await;
             match failure {
-                Ok((_, Err(git::Error::Inspect(detail)))) => emit(Event::Lines(vec![detail])).await,
+                Ok(Err(git::Error::Inspect(detail))) => emit(Event::Lines(vec![detail])).await,
                 Err(error) => emit(Event::Lines(vec![error.to_string()])).await,
                 _ => {}
             }
@@ -148,18 +155,18 @@ pub async fn run<F: Future<Output = ()> + Send>(
         }
     };
     emit(Event::Inspected(status)).await;
-    if !status.matches_revision {
-        return Outcome::Unsynced;
-    }
+    let mut selector = match flake {
+        Ok(reference) => reference,
+        Err(outcome) => return outcome,
+    };
 
     let system = rustix::system::uname();
     let hostname = system.nodename().to_bytes();
     if hostname.is_empty() {
         return Outcome::MissingHostname;
     }
-    let Some(selector) = flake_selector(&path, OsStr::from_bytes(hostname)) else {
-        return Outcome::InvalidPath;
-    };
+    selector.push("#");
+    selector.push(OsStr::from_bytes(hostname));
 
     let mut command = Command::new(PKEXEC);
     command
@@ -175,18 +182,40 @@ pub async fn run<F: Future<Output = ()> + Send>(
     execute(command, emit).await
 }
 
-fn flake_selector(path: &Path, hostname: &OsStr) -> Option<OsString> {
+fn flake_reference(repository: &Path, directory: &Path) -> Result<OsString, Outcome> {
+    let root = repository
+        .canonicalize()
+        .map_err(|_| Outcome::InvalidPath)?;
+    let path = root
+        .join(directory)
+        .canonicalize()
+        .map_err(|_| Outcome::MissingFlake)?;
+    let relative = path.strip_prefix(&root).map_err(|_| Outcome::InvalidPath)?;
+    let file = path
+        .join("flake.nix")
+        .canonicalize()
+        .map_err(|_| Outcome::MissingFlake)?;
+    if !file.starts_with(&root) {
+        return Err(Outcome::InvalidPath);
+    }
+    if !file.is_file() {
+        return Err(Outcome::MissingFlake);
+    }
+
     let path_bytes = path.as_os_str().as_bytes();
-    let mut selector = if path_bytes.contains(&b'#') || path_bytes.contains(&b'?') {
-        // Nix interprets these characters as delimiters in plain path references.
-        let url = Url::from_file_path(path).ok()?;
-        OsString::from(format!("git+{url}"))
-    } else {
-        path.as_os_str().to_owned()
-    };
-    selector.push("#");
-    selector.push(hostname);
-    Some(selector)
+    if !path_bytes.contains(&b'#') && !path_bytes.contains(&b'?') {
+        return Ok(path.into_os_string());
+    }
+
+    // For paths with flake delimiters, Nix expects the Git root and a separate dir parameter.
+    let mut url = Url::from_file_path(&root).map_err(|_| Outcome::InvalidPath)?;
+    if !relative.as_os_str().is_empty() {
+        let encoded: String =
+            url::form_urlencoded::byte_serialize(relative.as_os_str().as_bytes()).collect();
+        let dir = encoded.replace('+', "%20");
+        url.set_query(Some(&format!("dir={dir}")));
+    }
+    Ok(format!("git+{url}").into())
 }
 
 async fn execute<F: Future<Output = ()> + Send>(

@@ -232,6 +232,7 @@ impl App {
                         previous.path != config.path
                             || previous.repository != config.repository
                             || previous.branch != config.branch
+                            || previous.flake_directory != config.flake_directory
                     }) {
                         self.rebuild = None;
                     }
@@ -272,19 +273,21 @@ impl App {
         let path = config.path.clone();
         let repository = config.repository.clone();
         let branch = config.branch.clone();
+        let flake_directory = config.flake_directory.clone();
         let mode = self.mode;
         self.rebuild = Some(rebuild::Run::new(mode));
         self.journal_expanded = true;
         self.invalidate_repository_check();
         Task::run(
             stream::channel(16, async move |mut sender| {
-                let outcome = rebuild::run(path, repository, branch, mode, |event| {
-                    let mut sender = sender.clone();
-                    async move {
-                        let _ = sender.send(event).await;
-                    }
-                })
-                .await;
+                let outcome =
+                    rebuild::run(path, repository, branch, flake_directory, mode, |event| {
+                        let mut sender = sender.clone();
+                        async move {
+                            let _ = sender.send(event).await;
+                        }
+                    })
+                    .await;
                 let _ = sender.send(rebuild::Event::Finished(outcome)).await;
             }),
             Message::Rebuild,

@@ -10,7 +10,10 @@ use iced::{
 };
 
 use crate::{
-    config::{CONFIG_DIRECTORY, Config, DEFAULT_REPO_PATH, SaveError, display_repo_path},
+    config::{
+        CONFIG_DIRECTORY, Config, DEFAULT_FLAKE_DIRECTORY, DEFAULT_REPO_PATH, SaveError,
+        display_repo_path,
+    },
     i18n::{I18n, LanguagePreference},
     ui::style::{buttons, colors, inputs, pick_lists, spacing},
 };
@@ -22,6 +25,7 @@ pub enum Message {
     TokenChanged(String),
     PathChanged(String),
     BranchChanged(String),
+    FlakeDirectoryChanged(String),
     Save,
 }
 
@@ -63,6 +67,7 @@ impl State {
             Message::TokenChanged(value) => self.draft.token = value,
             Message::PathChanged(value) => self.draft.path = value.into(),
             Message::BranchChanged(value) => self.draft.branch = value,
+            Message::FlakeDirectoryChanged(value) => self.draft.flake_directory = value.into(),
             Message::Save => {
                 self.saving = true;
                 return Some(self.draft.clone());
@@ -94,6 +99,12 @@ impl State {
         )
         .on_input_maybe(editing.then_some(Message::BranchChanged))
         .on_submit_maybe((editing && can_save).then_some(Message::Save));
+        let flake_directory = text_input(
+            DEFAULT_FLAKE_DIRECTORY,
+            &self.draft.flake_directory.to_string_lossy(),
+        )
+        .on_input_maybe(editing.then_some(Message::FlakeDirectoryChanged))
+        .on_submit_maybe((editing && can_save).then_some(Message::Save));
 
         let mut form = column![
             language_field(i18n, self.draft.language, editing),
@@ -105,6 +116,11 @@ impl State {
                     .color(colors::TEXT_MUTED)
             ),
             field(i18n.text("settings-branch"), branch),
+            field(i18n.text("settings-flake-directory"), flake_directory).push(
+                text(i18n.text("settings-flake-directory-hint"))
+                    .size(13)
+                    .color(colors::TEXT_MUTED)
+            ),
         ]
         .spacing(spacing::XL);
 
@@ -212,6 +228,7 @@ fn error_text(i18n: &I18n, error: SaveError) -> String {
         SaveError::Token => i18n.text("settings-error-token"),
         SaveError::Path => i18n.text("settings-error-path"),
         SaveError::Branch => i18n.text("settings-error-branch"),
+        SaveError::FlakeDirectory => i18n.text("settings-error-flake-directory"),
         SaveError::Write => {
             let mut args = FluentArgs::new();
             args.set("directory", format!("~/{CONFIG_DIRECTORY}"));
