@@ -35,13 +35,27 @@ pub fn available() -> bool {
         .is_ok_and(|output| output.status.success())
 }
 
-pub fn has_local_changes(path: &Path, repository: &str) -> Result<bool, Error> {
+#[derive(Clone, Copy, Default)]
+pub struct WorkingCopy {
+    pub has_local_changes: bool,
+    pub matches_revision: bool,
+}
+
+pub fn inspect(path: &Path, repository: &str, branch: &str) -> Result<WorkingCopy, Error> {
     check_worktree(path, repository)?;
-    worktree_dirty(path)
+    let has_local_changes = worktree_dirty(path)?;
+    let tracking_ref = tracking_ref(branch);
+    let matches_revision = on_branch(path, branch).unwrap_or(false)
+        && revision(path, &tracking_ref)
+            .is_ok_and(|expected| revision(path, "HEAD").is_ok_and(|head| head == expected));
+    Ok(WorkingCopy {
+        has_local_changes,
+        matches_revision,
+    })
 }
 
 pub fn download(config: &Config) -> Result<(), Error> {
-    let tracking_ref = format!("refs/remotes/origin/{}", config.branch);
+    let tracking_ref = tracking_ref(&config.branch);
 
     match fs::symlink_metadata(&config.path) {
         Ok(_) => synchronize(config, &tracking_ref),
@@ -140,20 +154,28 @@ fn checkout(path: &Path, config: &Config, tracking_ref: &str) -> Result<(), Erro
         &config.token,
     )?;
 
-    let branch = run(
-        command()
-            .current_dir(path)
-            .args(["symbolic-ref", "--quiet", "HEAD"]),
-        |_| Error::Revision,
-        &config.token,
-    )?;
-    if branch.strip_suffix(b"\n") != Some(format!("refs/heads/{}", config.branch).as_bytes())
+    if !on_branch(path, &config.branch)?
         || revision(path, "HEAD")? != expected
         || revision(path, tracking_ref)? != expected
     {
         return Err(Error::Revision);
     }
     Ok(())
+}
+
+fn tracking_ref(branch: &str) -> String {
+    format!("refs/remotes/origin/{branch}")
+}
+
+fn on_branch(path: &Path, branch: &str) -> Result<bool, Error> {
+    let head = run(
+        command()
+            .current_dir(path)
+            .args(["symbolic-ref", "--quiet", "HEAD"]),
+        |_| Error::Revision,
+        "",
+    )?;
+    Ok(head.strip_suffix(b"\n") == Some(format!("refs/heads/{branch}").as_bytes()))
 }
 
 fn revision(path: &Path, reference: &str) -> Result<Vec<u8>, Error> {

@@ -113,7 +113,7 @@ impl State {
         }
         if !can_save {
             form = form.push(
-                text(i18n.text("settings-download-in-progress"))
+                text(i18n.text("settings-operation-in-progress"))
                     .size(14)
                     .color(colors::INFO),
             );

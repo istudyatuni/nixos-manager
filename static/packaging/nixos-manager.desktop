@@ -1,0 +1,7 @@
+[Desktop Entry]
+Categories=System
+Name=NixOS Manager
+Comment=NixOS Manager
+Exec=nixos-manager
+Icon=nix-snowflake
+Type=Application

@@ -2,6 +2,7 @@ mod app;
 mod config;
 mod git;
 mod i18n;
+mod rebuild;
 mod ui;
 
 use app::App;

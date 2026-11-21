@@ -1,7 +1,9 @@
 use std::{env, path::PathBuf, time::Duration};
 
 use iced::{
-    Center, Element, Fill, Subscription, Task, Theme, time,
+    Center, Element, Fill, Subscription, Task, Theme,
+    futures::SinkExt,
+    stream, time,
     widget::{button, column, container, row, space, text},
 };
 
@@ -9,6 +11,7 @@ use crate::{
     config::{self, Config, LoadError, SaveError},
     git,
     i18n::I18n,
+    rebuild::{self, Mode},
     ui::{
         screens::{Screen, overview, settings},
         style::{self, buttons, containers, spacing},
@@ -23,10 +26,12 @@ pub struct App {
     config: Option<Config>,
     loading: bool,
     load_error: bool,
-    mode: overview::Mode,
+    mode: Mode,
     git_available: bool,
-    has_local_changes: bool,
+    rebuild_tools: rebuild::Tools,
+    working_copy: git::WorkingCopy,
     download: overview::DownloadStatus,
+    rebuild: Option<rebuild::Run>,
     checking_repository: bool,
     repository_generation: u64,
 }
@@ -37,11 +42,12 @@ pub enum Message {
     CloseSettings,
     Overview(overview::Message),
     Settings(settings::Message),
-    Loaded(Result<Option<Config>, LoadError>, bool),
+    Loaded(Result<Option<Config>, LoadError>, bool, rebuild::Tools),
     Saved(Result<Config, SaveError>),
     Downloaded(Result<(), git::Error>),
+    Rebuild(rebuild::Event),
     InspectRepository,
-    RepositoryInspected(u64, bool),
+    RepositoryInspected(u64, git::WorkingCopy),
 }
 
 impl App {
@@ -54,20 +60,26 @@ impl App {
             config: None,
             loading: true,
             load_error: false,
-            mode: overview::Mode::default(),
+            mode: Mode::default(),
             git_available: false,
-            has_local_changes: false,
+            rebuild_tools: rebuild::Tools::default(),
+            working_copy: git::WorkingCopy::default(),
             download: overview::DownloadStatus::Idle,
+            rebuild: None,
             checking_repository: false,
             repository_generation: 0,
         };
         let task = Task::perform(
             async {
-                tokio::task::spawn_blocking(|| (config::load(), git::available()))
-                    .await
-                    .unwrap_or((Err(LoadError), false))
+                tokio::task::spawn_blocking(|| {
+                    (config::load(), git::available(), rebuild::Tools::detect())
+                })
+                .await
+                .unwrap_or((Err(LoadError), false, rebuild::Tools::default()))
             },
-            |(result, git_available)| Message::Loaded(result, git_available),
+            |(result, git_available, rebuild_tools)| {
+                Message::Loaded(result, git_available, rebuild_tools)
+            },
         );
         (app, task)
     }
@@ -103,12 +115,12 @@ impl App {
                 }
             }
             Message::Overview(overview::Message::SelectMode(mode)) => {
-                self.mode = mode;
+                if !self.is_busy() {
+                    self.mode = mode;
+                }
             }
             Message::Overview(overview::Message::Download) => {
-                if !self.git_available
-                    || self.download.is_running()
-                    || !matches!(self.screen, Screen::Overview)
+                if !self.git_available || self.is_busy() || !matches!(self.screen, Screen::Overview)
                 {
                     return Task::none();
                 }
@@ -119,6 +131,7 @@ impl App {
                     .cloned()
                 {
                     self.download = overview::DownloadStatus::Running;
+                    self.working_copy.matches_revision = false;
                     self.invalidate_repository_check();
                     return Task::perform(
                         async move {
@@ -132,24 +145,41 @@ impl App {
             }
             Message::Downloaded(result) => {
                 if result.is_ok() {
-                    self.mode = overview::Mode::Test;
-                    self.has_local_changes = false;
+                    self.mode = Mode::Test;
+                    self.working_copy = git::WorkingCopy {
+                        has_local_changes: false,
+                        matches_revision: true,
+                    };
                 } else if matches!(result, Err(git::Error::LocalChanges)) {
-                    self.has_local_changes = true;
+                    self.working_copy.has_local_changes = true;
                 }
                 self.download = overview::DownloadStatus::Finished(result);
                 return self.inspect_repository();
             }
-            Message::InspectRepository => return self.inspect_repository(),
-            Message::RepositoryInspected(generation, has_local_changes) => {
-                if generation == self.repository_generation {
-                    self.checking_repository = false;
-                    self.has_local_changes = has_local_changes;
+            Message::Overview(overview::Message::Rebuild) => return self.start_rebuild(),
+            Message::Rebuild(event) => {
+                if let Some(run) = self.rebuild.as_mut().filter(|run| run.is_running()) {
+                    match event {
+                        rebuild::Event::Inspected(status) => self.working_copy = status,
+                        rebuild::Event::Lines(lines) => run.append(lines),
+                        rebuild::Event::Finished(outcome) => {
+                            run.outcome = Some(outcome);
+                            return self.inspect_repository();
+                        }
+                    }
                 }
             }
-            Message::Loaded(result, git_available) => {
+            Message::InspectRepository => return self.inspect_repository(),
+            Message::RepositoryInspected(generation, status) => {
+                if generation == self.repository_generation {
+                    self.checking_repository = false;
+                    self.working_copy = status;
+                }
+            }
+            Message::Loaded(result, git_available, rebuild_tools) => {
                 self.loading = false;
                 self.git_available = git_available;
+                self.rebuild_tools = rebuild_tools;
                 match result {
                     Ok(Some(config)) => {
                         self.i18n.set_language(config.language);
@@ -161,8 +191,9 @@ impl App {
                 return self.inspect_repository();
             }
             Message::Settings(message) => {
+                let can_save = !self.is_busy();
                 if let Screen::Settings(state) = &mut self.screen
-                    && let Some(draft) = state.update(message, !self.download.is_running())
+                    && let Some(draft) = state.update(message, can_save)
                 {
                     let repository_required = self
                         .config
@@ -184,11 +215,18 @@ impl App {
             Message::Saved(result) => match result {
                 Ok(config) => {
                     self.i18n.set_language(config.language);
+                    if self.config.as_ref().is_some_and(|previous| {
+                        previous.path != config.path
+                            || previous.repository != config.repository
+                            || previous.branch != config.branch
+                    }) {
+                        self.rebuild = None;
+                    }
                     self.config = Some(config);
                     self.load_error = false;
                     self.screen = Screen::Overview;
                     self.download = overview::DownloadStatus::Idle;
-                    self.has_local_changes = false;
+                    self.working_copy = git::WorkingCopy::default();
                     self.invalidate_repository_check();
                     return self.inspect_repository();
                 }
@@ -203,10 +241,46 @@ impl App {
         Task::none()
     }
 
+    fn is_busy(&self) -> bool {
+        self.download.is_running() || self.rebuild.as_ref().is_some_and(rebuild::Run::is_running)
+    }
+
+    fn start_rebuild(&mut self) -> Task<Message> {
+        if self.is_busy()
+            || !matches!(self.screen, Screen::Overview)
+            || !self.rebuild_tools.available()
+            || !self.working_copy.matches_revision
+        {
+            return Task::none();
+        }
+        let Some(config) = &self.config else {
+            return Task::none();
+        };
+        let path = config.path.clone();
+        let repository = config.repository.clone();
+        let branch = config.branch.clone();
+        let mode = self.mode;
+        self.rebuild = Some(rebuild::Run::new(mode));
+        self.invalidate_repository_check();
+        Task::run(
+            stream::channel(16, async move |mut sender| {
+                let outcome = rebuild::run(path, repository, branch, mode, |event| {
+                    let mut sender = sender.clone();
+                    async move {
+                        let _ = sender.send(event).await;
+                    }
+                })
+                .await;
+                let _ = sender.send(rebuild::Event::Finished(outcome)).await;
+            }),
+            Message::Rebuild,
+        )
+    }
+
     fn can_inspect_repository(&self) -> bool {
         matches!(self.screen, Screen::Overview)
             && self.git_available
-            && !self.download.is_running()
+            && !self.is_busy()
             && self
                 .config
                 .as_ref()
@@ -223,17 +297,18 @@ impl App {
         };
         let path = config.path.clone();
         let repository = config.repository.clone();
+        let branch = config.branch.clone();
         let generation = self.repository_generation;
         self.checking_repository = true;
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    git::has_local_changes(&path, &repository).unwrap_or(false)
+                    git::inspect(&path, &repository, &branch).unwrap_or_default()
                 })
                 .await
-                .unwrap_or(false)
+                .unwrap_or_default()
             },
-            move |dirty| Message::RepositoryInspected(generation, dirty),
+            move |status| Message::RepositoryInspected(generation, status),
         )
     }
 
@@ -252,8 +327,11 @@ impl App {
                         .map(|path| overview::Repository {
                             path: config::display_repo_path(path, self.home.as_deref()),
                             git_available: self.git_available,
-                            has_local_changes: self.has_local_changes,
+                            rebuild_tools: self.rebuild_tools,
+                            working_copy: self.working_copy,
+                            busy: self.is_busy(),
                             download: &self.download,
+                            rebuild: self.rebuild.as_ref(),
                         });
                 (
                     self.title(),
@@ -274,7 +352,7 @@ impl App {
                 self.i18n.text("app-back"),
                 (!state.saving()).then_some(Message::CloseSettings),
                 state
-                    .view(&self.i18n, !self.download.is_running())
+                    .view(&self.i18n, !self.is_busy())
                     .map(Message::Settings),
             ),
         };

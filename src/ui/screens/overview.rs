@@ -8,16 +8,11 @@ use std::{borrow::Cow, path::Path};
 use crate::{
     git,
     i18n::I18n,
+    rebuild::{self, Mode},
     ui::style::{buttons, colors, containers, spacing},
 };
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    #[default]
-    Test,
-    Boot,
-    Switch,
-}
+mod journal;
 
 impl Mode {
     fn label(self) -> &'static str {
@@ -41,6 +36,7 @@ impl Mode {
 pub enum Message {
     SelectMode(Mode),
     Download,
+    Rebuild,
 }
 
 pub enum DownloadStatus {
@@ -58,8 +54,11 @@ impl DownloadStatus {
 pub struct Repository<'a> {
     pub path: Cow<'a, Path>,
     pub git_available: bool,
-    pub has_local_changes: bool,
+    pub rebuild_tools: rebuild::Tools,
+    pub working_copy: git::WorkingCopy,
+    pub busy: bool,
     pub download: &'a DownloadStatus,
+    pub rebuild: Option<&'a rebuild::Run>,
 }
 
 pub fn view<'a>(
@@ -70,7 +69,28 @@ pub fn view<'a>(
     load_error: bool,
 ) -> Element<'a, Message> {
     let content = match repository {
-        Some(repository) => configured(i18n, repository, mode),
+        Some(repository) => {
+            let run = repository.rebuild;
+            let controls = configured(i18n, repository, mode);
+            if let Some(run) = run {
+                let controls = container(scrollable(controls).height(Shrink)).max_height(230);
+                let page = column![controls, journal::view(i18n, run)]
+                    .width(Fill)
+                    .height(Fill)
+                    .spacing(spacing::LG)
+                    .align_x(Center);
+                return container(
+                    container(page)
+                        .width(Fill)
+                        .max_width(880)
+                        .padding([spacing::LG, spacing::PAGE_PADDING]),
+                )
+                .center_x(Fill)
+                .height(Fill)
+                .into();
+            }
+            controls
+        }
         None => {
             let prompt = if loading {
                 "app-loading-settings"
@@ -94,10 +114,17 @@ pub fn view<'a>(
         }
     };
 
-    container(content)
-        .padding(spacing::PAGE_PADDING)
-        .center(Fill)
-        .into()
+    container(
+        scrollable(
+            container(content)
+                .padding(spacing::PAGE_PADDING)
+                .center_x(Fill),
+        )
+        .height(Shrink)
+        .width(Fill),
+    )
+    .center(Fill)
+    .into()
 }
 
 fn configured<'a>(i18n: &I18n, repository: Repository<'a>, mode: Mode) -> Element<'a, Message> {
@@ -110,7 +137,7 @@ fn configured<'a>(i18n: &I18n, repository: Repository<'a>, mode: Mode) -> Elemen
     ]
     .spacing(spacing::SM)
     .align_x(Center);
-    if repository.has_local_changes {
+    if repository.working_copy.has_local_changes {
         location = location.push(
             text(i18n.text("overview-local-changes"))
                 .size(14)
@@ -125,7 +152,7 @@ fn configured<'a>(i18n: &I18n, repository: Repository<'a>, mode: Mode) -> Elemen
                 button(text(i18n.text(choice.label())).font(Font::MONOSPACE))
                     .padding([7, 12])
                     .style(move |_, status| buttons::choice(mode == choice, status))
-                    .on_press(Message::SelectMode(choice)),
+                    .on_press_maybe((!repository.busy).then_some(Message::SelectMode(choice))),
             )
         },
     );
@@ -136,19 +163,28 @@ fn configured<'a>(i18n: &I18n, repository: Repository<'a>, mode: Mode) -> Elemen
     let actions = row![
         button(text(i18n.text("overview-update")))
             .padding([7, 12])
-            .style(buttons::primary),
+            .style(buttons::primary)
+            .on_press_maybe(
+                (repository.rebuild_tools.available()
+                    && repository.working_copy.matches_revision
+                    && !repository.busy)
+                    .then_some(Message::Rebuild),
+            ),
         button(text(i18n.text("overview-download")))
             .padding([7, 12])
             .style(buttons::secondary)
             .on_press_maybe(
-                (repository.git_available && !repository.download.is_running())
-                    .then_some(Message::Download),
+                (repository.git_available && !repository.busy).then_some(Message::Download),
             ),
     ]
     .spacing(spacing::MD);
 
     let mut content = column![location, modes, hint, actions]
-        .spacing(spacing::XL)
+        .spacing(if repository.rebuild.is_some() {
+            spacing::MD
+        } else {
+            spacing::XL
+        })
         .width(Fill)
         .align_x(Center);
 
@@ -157,6 +193,36 @@ fn configured<'a>(i18n: &I18n, repository: Repository<'a>, mode: Mode) -> Elemen
             text(i18n.text("overview-git-unavailable"))
                 .size(14)
                 .color(colors::WARNING)
+                .align_x(Center),
+        );
+    }
+    for (available, program) in [
+        (repository.rebuild_tools.pkexec, rebuild::PKEXEC),
+        (
+            repository.rebuild_tools.nixos_rebuild,
+            rebuild::NIXOS_REBUILD,
+        ),
+    ] {
+        if !available {
+            args.set("program", program);
+            content = content.push(
+                text(i18n.with_args("overview-rebuild-tool-unavailable", &args))
+                    .size(14)
+                    .color(colors::WARNING)
+                    .wrapping(text::Wrapping::WordOrGlyph)
+                    .align_x(Center),
+            );
+        }
+    }
+    if repository.git_available
+        && repository.rebuild_tools.available()
+        && !repository.working_copy.matches_revision
+        && !repository.busy
+    {
+        content = content.push(
+            text(i18n.text("overview-rebuild-requires-revision"))
+                .size(14)
+                .color(colors::TEXT_MUTED)
                 .align_x(Center),
         );
     }

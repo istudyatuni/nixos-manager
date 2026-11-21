@@ -11,3 +11,9 @@ pub fn card(_theme: &Theme) -> container::Style {
         .background(colors::BG_LIGHT)
         .border(outline(colors::BORDER_MUTED, radius::CARD))
 }
+
+pub fn journal(_theme: &Theme) -> container::Style {
+    container::Style::default()
+        .background(colors::BG_DARK)
+        .border(outline(colors::BORDER_MUTED, radius::CARD))
+}
