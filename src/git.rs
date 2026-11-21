@@ -35,8 +35,10 @@ pub fn available() -> bool {
         .is_ok_and(|output| output.status.success())
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub struct WorkingCopy {
+    pub branch: Option<String>,
+    pub commit: Option<String>,
     pub has_local_changes: bool,
     pub matches_revision: bool,
 }
@@ -44,27 +46,37 @@ pub struct WorkingCopy {
 pub fn inspect(path: &Path, repository: &str, branch: &str) -> Result<WorkingCopy, Error> {
     check_worktree(path, repository)?;
     let has_local_changes = worktree_dirty(path)?;
-    let tracking_ref = tracking_ref(branch);
-    let matches_revision = on_branch(path, branch).unwrap_or(false)
-        && revision(path, &tracking_ref)
-            .is_ok_and(|expected| revision(path, "HEAD").is_ok_and(|head| head == expected));
+    let current_branch = current_branch(path).ok();
+    let head = revision(path, "HEAD").ok();
+    let matches_revision = current_branch.as_deref() == Some(branch.as_bytes())
+        && head.as_ref().is_some_and(|head| {
+            revision(path, &tracking_ref(branch)).is_ok_and(|expected| *head == expected)
+        });
     Ok(WorkingCopy {
+        branch: current_branch.map(|branch| String::from_utf8_lossy(&branch).into_owned()),
+        commit: head.as_deref().map(short_commit),
         has_local_changes,
         matches_revision,
     })
 }
 
-pub fn download(config: &Config) -> Result<(), Error> {
+pub fn download(config: &Config) -> Result<WorkingCopy, Error> {
     let tracking_ref = tracking_ref(&config.branch);
 
-    match fs::symlink_metadata(&config.path) {
+    let head = match fs::symlink_metadata(&config.path) {
         Ok(_) => synchronize(config, &tracking_ref),
         Err(error) if error.kind() == io::ErrorKind::NotFound => clone(config, &tracking_ref),
         Err(_) => Err(Error::Path),
-    }
+    }?;
+    Ok(WorkingCopy {
+        branch: Some(config.branch.clone()),
+        commit: Some(short_commit(&head)),
+        has_local_changes: false,
+        matches_revision: true,
+    })
 }
 
-fn clone(config: &Config, tracking_ref: &str) -> Result<(), Error> {
+fn clone(config: &Config, tracking_ref: &str) -> Result<Vec<u8>, Error> {
     let parent = config.path.parent().ok_or(Error::Path)?;
     fs::create_dir_all(parent).map_err(|_| Error::Path)?;
     let staging = Builder::new()
@@ -100,19 +112,20 @@ fn clone(config: &Config, tracking_ref: &str) -> Result<(), Error> {
     run(&mut git, Error::Clone, &config.token)?;
 
     check_worktree(staging.path(), &config.repository)?;
-    checkout(staging.path(), config, tracking_ref)?;
+    let head = checkout(staging.path(), config, tracking_ref)?;
 
     // Publish the clone only after checkout succeeds. Renaming a directory cannot
     // overwrite another clone because that destination contains .git.
     match fs::symlink_metadata(&config.path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            fs::rename(staging.path(), &config.path).map_err(|_| Error::Path)
+            fs::rename(staging.path(), &config.path).map_err(|_| Error::Path)?;
+            Ok(head)
         }
         _ => Err(Error::Path),
     }
 }
 
-fn synchronize(config: &Config, tracking_ref: &str) -> Result<(), Error> {
+fn synchronize(config: &Config, tracking_ref: &str) -> Result<Vec<u8>, Error> {
     let remote = check_worktree(&config.path, &config.repository)?;
     require_clean(&config.path)?;
 
@@ -138,7 +151,7 @@ fn synchronize(config: &Config, tracking_ref: &str) -> Result<(), Error> {
     checkout(&config.path, config, tracking_ref)
 }
 
-fn checkout(path: &Path, config: &Config, tracking_ref: &str) -> Result<(), Error> {
+fn checkout(path: &Path, config: &Config, tracking_ref: &str) -> Result<Vec<u8>, Error> {
     let expected = revision(path, tracking_ref)?;
     run(
         command().current_dir(path).args([
@@ -154,20 +167,20 @@ fn checkout(path: &Path, config: &Config, tracking_ref: &str) -> Result<(), Erro
         &config.token,
     )?;
 
-    if !on_branch(path, &config.branch)?
+    if current_branch(path)? != config.branch.as_bytes()
         || revision(path, "HEAD")? != expected
         || revision(path, tracking_ref)? != expected
     {
         return Err(Error::Revision);
     }
-    Ok(())
+    Ok(expected)
 }
 
 fn tracking_ref(branch: &str) -> String {
     format!("refs/remotes/origin/{branch}")
 }
 
-fn on_branch(path: &Path, branch: &str) -> Result<bool, Error> {
+fn current_branch(path: &Path) -> Result<Vec<u8>, Error> {
     let head = run(
         command()
             .current_dir(path)
@@ -175,7 +188,10 @@ fn on_branch(path: &Path, branch: &str) -> Result<bool, Error> {
         |_| Error::Revision,
         "",
     )?;
-    Ok(head.strip_suffix(b"\n") == Some(format!("refs/heads/{branch}").as_bytes()))
+    head.strip_prefix(b"refs/heads/")
+        .and_then(|branch| branch.strip_suffix(b"\n"))
+        .map(<[u8]>::to_vec)
+        .ok_or(Error::Revision)
 }
 
 fn revision(path: &Path, reference: &str) -> Result<Vec<u8>, Error> {
@@ -186,6 +202,11 @@ fn revision(path: &Path, reference: &str) -> Result<Vec<u8>, Error> {
         |_| Error::Revision,
         "",
     )
+}
+
+fn short_commit(revision: &[u8]) -> String {
+    let revision = revision.trim_ascii();
+    String::from_utf8_lossy(&revision[..revision.len().min(12)]).into_owned()
 }
 
 fn check_worktree(path: &Path, repository: &str) -> Result<String, Error> {

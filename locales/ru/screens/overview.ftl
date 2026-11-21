@@ -1,5 +1,13 @@
 overview-unconfigured = Укажите репозиторий в настройках
 overview-repository = Используется репозиторий { $path }
+overview-repository-status =
+    { $state ->
+        [dirty] { $branch }, коммит { $commit } (dirty)
+       *[clean] { $branch }, коммит { $commit }
+    }
+overview-repository-branch = Ветка { $name }
+overview-repository-detached = HEAD вне ветки
+overview-repository-no-commit = —
 overview-mode-test = test
 overview-mode-boot = boot
 overview-mode-switch = switch
@@ -8,7 +16,6 @@ overview-mode-boot-hint = Выбрать новую систему для сле
 overview-mode-switch-hint = Применить сейчас и выбрать для следующей загрузки.
 overview-update = Обновить систему
 overview-download = Загрузить изменения
-overview-local-changes = В рабочей копии есть локальные изменения.
 overview-git-unavailable = Git недоступен. Чтобы загружать изменения, установите Git или добавьте его в PATH.
 overview-download-running = Загрузка изменений…
 overview-download-success = Локальная ветка синхронизирована.

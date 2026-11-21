@@ -1,5 +1,13 @@
 overview-unconfigured = Specify a repository in Settings
 overview-repository = Using repository { $path }
+overview-repository-status =
+    { $state ->
+        [dirty] { $branch }, commit { $commit } (dirty)
+       *[clean] { $branch }, commit { $commit }
+    }
+overview-repository-branch = Branch { $name }
+overview-repository-detached = Detached HEAD
+overview-repository-no-commit = —
 overview-mode-test = test
 overview-mode-boot = boot
 overview-mode-switch = switch
@@ -8,7 +16,6 @@ overview-mode-boot-hint = Select the new system for the next boot. Continue usin
 overview-mode-switch-hint = Apply now and select for the next boot.
 overview-update = Update system
 overview-download = Download changes
-overview-local-changes = The working copy has local changes.
 overview-git-unavailable = Git is unavailable. Install it or add it to PATH to download changes.
 overview-download-running = Downloading changes…
 overview-download-success = The local branch is up to date.

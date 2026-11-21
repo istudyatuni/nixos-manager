@@ -50,7 +50,7 @@ pub enum Message {
     Settings(settings::Message),
     Loaded(Result<Option<Config>, LoadError>, bool, rebuild::Tools),
     Saved(Result<Config, SaveError>),
-    Downloaded(Result<(), git::Error>),
+    Downloaded(Result<git::WorkingCopy, git::Error>),
     Rebuild(rebuild::Event),
     InspectRepository,
     RepositoryInspected(u64, git::WorkingCopy),
@@ -165,15 +165,16 @@ impl App {
                 }
             }
             Message::Downloaded(result) => {
-                if result.is_ok() {
-                    self.mode = Mode::Test;
-                    self.working_copy = git::WorkingCopy {
-                        has_local_changes: false,
-                        matches_revision: true,
-                    };
-                } else if matches!(result, Err(git::Error::LocalChanges)) {
-                    self.working_copy.has_local_changes = true;
-                }
+                let result = result
+                    .map(|status| {
+                        self.mode = Mode::Test;
+                        self.working_copy = status;
+                    })
+                    .inspect_err(|error| {
+                        if matches!(error, git::Error::LocalChanges) {
+                            self.working_copy.has_local_changes = true;
+                        }
+                    });
                 self.download = overview::DownloadStatus::Finished(result);
                 self.overview.set_download_error(&self.i18n, &self.download);
                 return self.inspect_repository();
@@ -400,7 +401,7 @@ impl App {
                             path: config::display_repo_path(path, self.home.as_deref()),
                             git_available: self.git_available,
                             rebuild_tools: self.rebuild_tools,
-                            working_copy: self.working_copy,
+                            working_copy: &self.working_copy,
                             busy: self.is_busy(),
                             download: &self.download,
                         });

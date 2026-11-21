@@ -64,7 +64,7 @@ pub struct Repository<'a> {
     pub path: Cow<'a, Path>,
     pub git_available: bool,
     pub rebuild_tools: rebuild::Tools,
-    pub working_copy: git::WorkingCopy,
+    pub working_copy: &'a git::WorkingCopy,
     pub busy: bool,
     pub download: &'a DownloadStatus,
 }
@@ -142,11 +142,45 @@ fn configured<'a>(
     ]
     .spacing(spacing::SM)
     .align_x(Center);
-    if repository.working_copy.has_local_changes {
+    let working_copy = repository.working_copy;
+    if working_copy.branch.is_some()
+        || working_copy.commit.is_some()
+        || working_copy.has_local_changes
+    {
+        let mut status = FluentArgs::new();
+        let branch = match working_copy.branch.as_deref() {
+            Some(name) => {
+                status.set("name", name);
+                i18n.with_args("overview-repository-branch", &status)
+            }
+            None => i18n.text("overview-repository-detached"),
+        };
+        status.set("branch", branch);
+        status.set(
+            "commit",
+            working_copy.commit.as_deref().map_or_else(
+                || i18n.text("overview-repository-no-commit").into(),
+                Cow::Borrowed,
+            ),
+        );
+        status.set(
+            "state",
+            if working_copy.has_local_changes {
+                "dirty"
+            } else {
+                "clean"
+            },
+        );
         location = location.push(
-            text(i18n.text("overview-local-changes"))
+            text(i18n.with_args("overview-repository-status", &status))
+                .font(Font::MONOSPACE)
                 .size(14)
-                .color(colors::WARNING)
+                .color(if working_copy.has_local_changes {
+                    colors::WARNING
+                } else {
+                    colors::TEXT_MUTED
+                })
+                .wrapping(text::Wrapping::WordOrGlyph)
                 .align_x(Center),
         );
     }
