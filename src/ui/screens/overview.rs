@@ -107,10 +107,9 @@ pub fn view<'a>(
         .width(Fill)
         .max_width(CARD_WIDTH)
         .max_height(230);
-    let has_output = state.has_journal();
     let journal = container(journal::view(i18n, rebuild, state))
         .width(Fill)
-        .max_width(if has_output { OUTPUT_WIDTH } else { CARD_WIDTH });
+        .max_width(OUTPUT_WIDTH);
     let page = column![controls, journal]
         .width(Fill)
         .height(Fill)
