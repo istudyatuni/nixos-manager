@@ -119,6 +119,31 @@ async fn cache_toolbar_button_opens_a_separate_dialog_without_a_repository() {
 }
 
 #[tokio::test]
+async fn cache_settings_show_the_expiration_in_the_interface_language() {
+    let metadata = attic::Metadata {
+        cache_name: "main".into(),
+        cache_expiration: "2026-02-07T14:30:45Z".parse().unwrap(),
+        server_url: "https://cache.example.org/".into(),
+        server_name: "private".into(),
+    };
+    let mut app = boot_with_cache(Ok(Some(metadata.clone())));
+    app.screen = Screen::CacheSettings(Box::new(cache_settings::State::new(Some(&metadata), true)));
+    let renderer = headless().await;
+    let size = Size::new(800.0, 540.0);
+    for (language, expected) in [
+        (LanguagePreference::English, "2/7/2026, 2:30:45 PM UTC"),
+        (LanguagePreference::Russian, "07.02.2026, 14:30:45 UTC"),
+    ] {
+        app.set_language(language);
+        assert!(
+            layout(&mut app.view(), &renderer, size)
+                .2
+                .contains(expected)
+        );
+    }
+}
+
+#[tokio::test]
 async fn compact_cache_settings_keep_connection_errors_and_actions_in_view() {
     use attic::tests::{NOW, fixed_time, jwt};
     use cache_settings::Message as CacheMessage;

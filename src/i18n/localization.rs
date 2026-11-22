@@ -1,4 +1,7 @@
-use fluent_bundle::{FluentArgs, FluentBundle, FluentResource};
+use std::fmt::Write;
+
+use chrono::{DateTime, Utc};
+use fluent_bundle::{FluentArgs, FluentBundle, FluentResource, FluentValue};
 use include_dir::{Dir, include_dir};
 
 use super::locale::{LanguagePreference, Locale};
@@ -61,6 +64,9 @@ fn load_bundle(locale: Locale) -> FluentBundle<FluentResource> {
     let tag = locale.tag();
     let dir = LOCALES.get_dir(tag).expect("embedded locale directory");
     let mut bundle = FluentBundle::new(vec![tag.parse().expect("valid locale identifier")]);
+    bundle
+        .add_function("DATETIME_UTC", date_time_utc)
+        .expect("register DATETIME_UTC");
 
     for file in dir
         .find("**/*.ftl")
@@ -78,4 +84,24 @@ fn load_bundle(locale: Locale) -> FluentBundle<FluentResource> {
             .unwrap_or_else(|errors| panic!("Invalid Fluent messages in {path}: {errors:?}"));
     }
     bundle
+}
+
+fn date_time_utc<'a>(positional: &[FluentValue<'a>], named: &FluentArgs<'_>) -> FluentValue<'a> {
+    let ([FluentValue::Number(timestamp)], Some(FluentValue::String(pattern))) =
+        (positional, named.get("pattern"))
+    else {
+        return FluentValue::Error;
+    };
+    if timestamp.value.fract() != 0.0 {
+        return FluentValue::Error;
+    }
+    let Some(date) = DateTime::<Utc>::from_timestamp(timestamp.into(), 0) else {
+        return FluentValue::Error;
+    };
+
+    let mut formatted = String::new();
+    match write!(formatted, "{}", date.format(pattern)) {
+        Ok(()) => formatted.into(),
+        Err(_) => FluentValue::Error,
+    }
 }

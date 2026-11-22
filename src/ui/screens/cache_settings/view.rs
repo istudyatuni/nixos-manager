@@ -75,7 +75,7 @@ impl State {
         }
         if let Some(metadata) = metadata {
             let mut args = FluentArgs::new();
-            args.set("date", metadata.expiration_rfc3339());
+            args.set("timestamp", metadata.cache_expiration.timestamp());
             body = body.push(text(i18n.with_args("cache-settings-expiration", &args)).size(14));
         }
         if self.cli_available {
