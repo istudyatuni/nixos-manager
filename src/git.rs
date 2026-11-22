@@ -46,6 +46,20 @@ pub struct WorkingCopy {
     pub matches_revision: bool,
 }
 
+impl WorkingCopy {
+    pub fn short_commit(&self) -> Option<&str> {
+        self.commit
+            .as_deref()
+            .map(|commit| commit.get(..12).unwrap_or(commit))
+    }
+
+    pub fn clean_head(&self) -> Option<&str> {
+        self.commit
+            .as_deref()
+            .filter(|_| self.matches_revision && !self.has_local_changes)
+    }
+}
+
 pub async fn inspect(runner: &CommandRunner, config: &Config) -> Result<WorkingCopy, Error> {
     let path = &config.path;
     check_worktree(runner, path, &config.repository).await?;
@@ -63,7 +77,7 @@ pub async fn inspect(runner: &CommandRunner, config: &Config) -> Result<WorkingC
     };
     Ok(WorkingCopy {
         branch: current_branch.map(|branch| String::from_utf8_lossy(&branch).into_owned()),
-        commit: head.as_deref().map(short_commit),
+        commit: head.as_deref().map(commit_id),
         has_local_changes,
         matches_revision,
     })
@@ -81,7 +95,7 @@ pub async fn download(runner: &CommandRunner, config: &Config) -> Result<Working
     }?;
     Ok(WorkingCopy {
         branch: Some(config.branch.clone()),
-        commit: Some(short_commit(&head)),
+        commit: Some(commit_id(&head)),
         has_local_changes: false,
         matches_revision: true,
     })
@@ -249,9 +263,8 @@ async fn revision(runner: &CommandRunner, path: &Path, reference: &str) -> Resul
     .await
 }
 
-fn short_commit(revision: &[u8]) -> String {
-    let revision = revision.trim_ascii();
-    String::from_utf8_lossy(&revision[..revision.len().min(12)]).into_owned()
+fn commit_id(revision: &[u8]) -> String {
+    String::from_utf8_lossy(revision.trim_ascii()).into_owned()
 }
 
 async fn check_worktree(

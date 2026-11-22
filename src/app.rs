@@ -1,4 +1,4 @@
-use std::{env, path::PathBuf, time::Duration};
+use std::{env, path::PathBuf, sync::Arc, time::Duration};
 
 use iced::{
     Center, Element, Fill, Subscription, Task, Theme, clipboard,
@@ -14,7 +14,7 @@ use crate::{
     config::{self, Config, DEFAULT_UI_SCALE, LoadError, SaveError},
     git,
     i18n::I18n,
-    rebuild::{self, Mode},
+    rebuild,
     ui::{
         screens::{Screen, overview, settings},
         style::{self, buttons, containers, spacing},
@@ -29,12 +29,13 @@ pub struct App {
     config: Option<Config>,
     loading: bool,
     load_error: bool,
-    mode: Mode,
+    steps: rebuild::Steps,
     git_available: bool,
     rebuild_tools: rebuild::Tools,
     working_copy: git::WorkingCopy,
     download: overview::DownloadStatus,
     rebuild: Option<rebuild::Run>,
+    built: Option<Arc<rebuild::Build>>,
     rebuild_interrupt: Option<mpsc::Sender<()>>,
     pending_close: Option<window::Id>,
     overview: overview::State,
@@ -69,12 +70,13 @@ impl App {
             config: None,
             loading: true,
             load_error: false,
-            mode: Mode::default(),
+            steps: rebuild::Steps::default(),
             git_available: false,
             rebuild_tools: rebuild::Tools::default(),
             working_copy: git::WorkingCopy::default(),
             download: overview::DownloadStatus::Idle,
             rebuild: None,
+            built: None,
             rebuild_interrupt: None,
             pending_close: None,
             overview: overview::State::default(),
@@ -169,9 +171,14 @@ impl App {
                     return self.inspect_repository();
                 }
             }
-            Message::Overview(overview::Message::SelectMode(mode)) => {
+            Message::Overview(overview::Message::SetBoot(boot)) => {
                 if !self.is_busy() {
-                    self.mode = mode;
+                    self.steps.boot = boot;
+                }
+            }
+            Message::Overview(overview::Message::SetActivate(activate)) => {
+                if !self.is_busy() {
+                    self.steps.activate = activate;
                 }
             }
             Message::Overview(overview::Message::Download) => {
@@ -199,7 +206,7 @@ impl App {
             Message::Downloaded(result) => {
                 let result = result
                     .map(|status| {
-                        self.mode = Mode::Test;
+                        self.steps = rebuild::Steps::default();
                         self.working_copy = status;
                     })
                     .inspect_err(|error| {
@@ -240,11 +247,16 @@ impl App {
                 if let Some(run) = self.rebuild.as_mut().filter(|run| run.is_running()) {
                     match event {
                         rebuild::Event::Inspected(status) => self.working_copy = status,
+                        rebuild::Event::Started(step) => run.step = step,
+                        rebuild::Event::Built(build) => self.built = Some(build),
                         rebuild::Event::InterruptFailed => {
                             run.interrupting = false;
                             self.pending_close = None;
                         }
                         rebuild::Event::Finished(outcome) => {
+                            if matches!(outcome, Err(rebuild::Error::BuildResult)) {
+                                self.built = None;
+                            }
                             run.outcome = Some(outcome);
                             self.rebuild_interrupt = None;
                             if let Some(id) = self.pending_close.take() {
@@ -308,6 +320,7 @@ impl App {
                             || previous.flake_directory != config.flake_directory
                     }) {
                         self.rebuild = None;
+                        self.built = None;
                         self.clear_journal();
                     }
                     self.config = Some(config);
@@ -347,28 +360,37 @@ impl App {
     }
 
     fn start_rebuild(&mut self) -> Task<Message> {
+        let cached = self.current_build().cloned();
+        let needs_build = cached.is_none();
+        let steps = self.steps;
         if self.is_busy()
             || !matches!(self.screen, Screen::Overview)
-            || !self.rebuild_tools.available()
             || !self.working_copy.matches_revision
+            || (!needs_build && !steps.applies())
+            || self
+                .rebuild_tools
+                .missing(needs_build, steps)
+                .next()
+                .is_some()
         {
             return Task::none();
         }
         let Some(config) = self.config.clone() else {
             return Task::none();
         };
-        let mode = self.mode;
         let (interrupt_request, interrupt) = mpsc::channel(1);
         self.rebuild_interrupt = Some(interrupt_request);
-        self.rebuild = Some(rebuild::Run::new(mode));
+        self.rebuild = Some(rebuild::Run::new(steps));
         self.overview.journal_expanded = true;
-        self.clear_journal();
+        if needs_build {
+            self.clear_journal();
+        }
         self.overview.set_rebuild_error(&self.i18n, None);
         self.invalidate_repository_check();
         let runner = self.commands.clone().with_secret(config.token.clone());
         Task::run(
             stream::channel(16, async move |mut sender| {
-                let outcome = rebuild::run(&runner, &config, mode, interrupt, |event| {
+                let outcome = rebuild::run(&runner, &config, steps, cached, interrupt, |event| {
                     let mut sender = sender.clone();
                     async move {
                         let _ = sender.send(event).await;
@@ -379,6 +401,12 @@ impl App {
             }),
             Message::Rebuild,
         )
+    }
+
+    fn current_build(&self) -> Option<&Arc<rebuild::Build>> {
+        self.built
+            .as_ref()
+            .filter(|build| build.matches(&self.working_copy))
     }
 
     fn inspect_repository(&mut self) -> Task<Message> {
@@ -428,6 +456,8 @@ impl App {
                             git_available: self.git_available,
                             rebuild_tools: self.rebuild_tools,
                             working_copy: &self.working_copy,
+                            steps: self.steps,
+                            needs_build: self.current_build().is_none(),
                             busy: self.is_busy(),
                             download: &self.download,
                         });
@@ -438,7 +468,6 @@ impl App {
                     overview::view(
                         &self.i18n,
                         repository,
-                        self.mode,
                         self.loading,
                         self.load_error,
                         self.rebuild.as_ref(),

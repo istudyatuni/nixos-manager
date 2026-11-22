@@ -1,9 +1,40 @@
 use iced::{
     Color, Theme,
-    widget::{text_editor, text_input},
+    widget::{checkbox, text_editor, text_input},
 };
 
 use super::{borders::outline, colors, radius};
+
+pub fn checkbox_style(_theme: &Theme, status: checkbox::Status) -> checkbox::Style {
+    let (checked, background, border, text_color) = match status {
+        checkbox::Status::Active { is_checked } => {
+            (is_checked, colors::BG, colors::BORDER, colors::TEXT)
+        }
+        checkbox::Status::Hovered { is_checked } => (
+            is_checked,
+            colors::BG_LIGHT,
+            colors::HIGHLIGHT,
+            colors::TEXT,
+        ),
+        checkbox::Status::Disabled { is_checked } => (
+            is_checked,
+            colors::BG,
+            colors::BORDER_MUTED,
+            colors::TEXT_MUTED,
+        ),
+    };
+    let accent = if matches!(status, checkbox::Status::Disabled { .. }) {
+        colors::HIGHLIGHT
+    } else {
+        colors::PRIMARY
+    };
+    checkbox::Style {
+        background: (if checked { accent } else { background }).into(),
+        border: outline(if checked { accent } else { border }, radius::CHECKBOX),
+        icon_color: colors::BG,
+        text_color: Some(text_color),
+    }
+}
 
 pub fn input(_theme: &Theme, status: text_input::Status) -> text_input::Style {
     let border = match status {

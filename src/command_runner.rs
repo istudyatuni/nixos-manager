@@ -144,13 +144,16 @@ impl CommandRunner {
     pub async fn interruptible<F: Future<Output = ()> + Send>(
         &self,
         command: Command,
-        mut interrupt: mpsc::Receiver<()>,
+        interrupt: &mut mpsc::Receiver<()>,
         mut interrupt_failed: impl FnMut() -> F + Send,
     ) -> Result<ExitStatus, RunError> {
         if interrupt.try_recv().is_ok() {
             return Err(RunError::Interrupted);
         }
         self.log_command(&command).await;
+        if interrupt.try_recv().is_ok() {
+            return Err(RunError::Interrupted);
+        }
         let (mut terminal, mut child, output) = match spawn_interruptible(command) {
             Ok(process) => process,
             Err(error) => {
@@ -183,7 +186,7 @@ impl CommandRunner {
         };
         let ((status, interrupt_sent), ()) = tokio::join!(wait, read);
         match status {
-            Ok(status) if interrupt_sent && !status.success() => Err(RunError::Interrupted),
+            Ok(_) if interrupt_sent => Err(RunError::Interrupted),
             Ok(status) => Ok(status),
             Err(error) => {
                 self.log(self.redact(&error.to_string())).await;

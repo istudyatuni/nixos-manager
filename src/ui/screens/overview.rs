@@ -1,15 +1,15 @@
 use fluent_bundle::FluentArgs;
 use iced::{
     Center, Color, Element, Fill, Font, Padding, Shrink,
-    widget::{button, column, container, responsive, row, scrollable, text, text_editor},
+    widget::{button, checkbox, column, container, responsive, row, scrollable, text, text_editor},
 };
 use std::{borrow::Cow, path::Path};
 
 use crate::{
     git,
     i18n::I18n,
-    rebuild::{self, Mode},
-    ui::style::{buttons, colors, containers, spacing},
+    rebuild,
+    ui::style::{buttons, colors, containers, inputs, spacing},
 };
 
 mod journal;
@@ -23,27 +23,10 @@ const COMPACT_WIDTH: f32 = 520.0;
 const COMPACT_HEIGHT: f32 = 400.0;
 const COMPACT_JOURNAL_HEIGHT: f32 = 224.0;
 
-impl Mode {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Test => "overview-mode-test",
-            Self::Boot => "overview-mode-boot",
-            Self::Switch => "overview-mode-switch",
-        }
-    }
-
-    fn hint(self) -> &'static str {
-        match self {
-            Self::Test => "overview-mode-test-hint",
-            Self::Boot => "overview-mode-boot-hint",
-            Self::Switch => "overview-mode-switch-hint",
-        }
-    }
-}
-
 #[derive(Clone)]
 pub enum Message {
-    SelectMode(Mode),
+    SetBoot(bool),
+    SetActivate(bool),
     Download,
     Rebuild,
     InterruptRebuild,
@@ -70,6 +53,8 @@ pub struct Repository<'a> {
     pub git_available: bool,
     pub rebuild_tools: rebuild::Tools,
     pub working_copy: &'a git::WorkingCopy,
+    pub steps: rebuild::Steps,
+    pub needs_build: bool,
     pub busy: bool,
     pub download: &'a DownloadStatus,
 }
@@ -77,7 +62,6 @@ pub struct Repository<'a> {
 pub fn view<'a>(
     i18n: &'a I18n,
     repository: Option<Repository<'a>>,
-    mode: Mode,
     loading: bool,
     load_error: bool,
     rebuild: Option<&'a rebuild::Run>,
@@ -85,7 +69,7 @@ pub fn view<'a>(
 ) -> Element<'a, Message> {
     responsive(move |size| {
         let compact = size.width < COMPACT_WIDTH || size.height < COMPACT_HEIGHT;
-        let controls = controls(i18n, repository.as_ref(), mode, loading, load_error, state);
+        let controls = controls(i18n, repository.as_ref(), loading, load_error, state);
         let controls = container(controls).width(Fill).max_width(CARD_WIDTH);
         let mut journal = container(journal::view(i18n, rebuild, state))
             .width(Fill)
@@ -118,13 +102,12 @@ pub fn view<'a>(
 fn controls<'a>(
     i18n: &I18n,
     repository: Option<&Repository<'_>>,
-    mode: Mode,
     loading: bool,
     load_error: bool,
     state: &'a State,
 ) -> Element<'a, Message> {
     match repository {
-        Some(repository) => configured(i18n, repository, mode, state),
+        Some(repository) => configured(i18n, repository, state),
         None => {
             let prompt = if loading {
                 "app-loading-settings"
@@ -152,7 +135,6 @@ fn controls<'a>(
 fn configured<'a>(
     i18n: &I18n,
     repository: &Repository<'_>,
-    mode: Mode,
     state: &'a State,
 ) -> Element<'a, Message> {
     let mut args = FluentArgs::new();
@@ -180,7 +162,7 @@ fn configured<'a>(
         status.set("branch", branch);
         status.set(
             "commit",
-            working_copy.commit.as_deref().map_or_else(
+            working_copy.short_commit().map_or_else(
                 || i18n.text("overview-repository-no-commit").into(),
                 Cow::Borrowed,
             ),
@@ -206,27 +188,40 @@ fn configured<'a>(
                 .align_x(Center),
         );
     }
-    let modes = [Mode::Test, Mode::Boot, Mode::Switch].into_iter().fold(
-        row![].spacing(spacing::SM),
-        |row, choice| {
-            row.push(
-                button(text(i18n.text(choice.label())).font(Font::MONOSPACE))
-                    .padding([7, 12])
-                    .style(move |_, status| buttons::choice(mode == choice, status))
-                    .on_press_maybe((!repository.busy).then_some(Message::SelectMode(choice))),
-            )
-        },
-    );
-    let hint = text(i18n.text(mode.hint()))
-        .size(14)
-        .color(colors::TEXT_MUTED)
-        .align_x(Center);
+    let steps = repository.steps;
+    let needs_build = repository.needs_build;
+    let options = row![
+        checkbox(steps.boot)
+            .label(i18n.text("overview-add-to-boot"))
+            .size(16)
+            .spacing(spacing::MD)
+            .style(inputs::checkbox_style)
+            .on_toggle_maybe((!repository.busy).then_some(Message::SetBoot)),
+        checkbox(steps.activate)
+            .label(i18n.text("overview-activate"))
+            .size(16)
+            .spacing(spacing::MD)
+            .style(inputs::checkbox_style)
+            .on_toggle_maybe((!repository.busy).then_some(Message::SetActivate)),
+    ]
+    .spacing(spacing::XL)
+    .align_y(Center)
+    .wrap()
+    .align_x(Center);
+    let tools = repository.rebuild_tools;
+    let tools_available = tools.missing(needs_build, steps).next().is_none();
+    let action = if needs_build {
+        "overview-build"
+    } else {
+        "overview-apply"
+    };
     let actions = row![
-        button(text(i18n.text("overview-update")))
+        button(text(i18n.text(action)))
             .padding([7, 12])
             .style(buttons::primary)
             .on_press_maybe(
-                (repository.rebuild_tools.available()
+                (tools_available
+                    && (needs_build || steps.applies())
                     && repository.working_copy.matches_revision
                     && !repository.busy)
                     .then_some(Message::Rebuild),
@@ -238,9 +233,11 @@ fn configured<'a>(
                 (repository.git_available && !repository.busy).then_some(Message::Download),
             ),
     ]
-    .spacing(spacing::MD);
+    .spacing(spacing::MD)
+    .wrap()
+    .align_x(Center);
 
-    let mut content = column![location, modes, hint, actions]
+    let mut content = column![location, options, actions]
         .spacing(spacing::MD)
         .width(Fill)
         .align_x(Center);
@@ -253,26 +250,18 @@ fn configured<'a>(
                 .align_x(Center),
         );
     }
-    for (available, program) in [
-        (repository.rebuild_tools.pkexec, rebuild::PKEXEC),
-        (
-            repository.rebuild_tools.nixos_rebuild,
-            rebuild::NIXOS_REBUILD,
-        ),
-    ] {
-        if !available {
-            args.set("program", program);
-            content = content.push(
-                text(i18n.with_args("overview-rebuild-tool-unavailable", &args))
-                    .size(14)
-                    .color(colors::WARNING)
-                    .wrapping(text::Wrapping::WordOrGlyph)
-                    .align_x(Center),
-            );
-        }
+    for program in tools.missing(needs_build, steps) {
+        args.set("program", program);
+        content = content.push(
+            text(i18n.with_args("overview-rebuild-tool-unavailable", &args))
+                .size(14)
+                .color(colors::WARNING)
+                .wrapping(text::Wrapping::WordOrGlyph)
+                .align_x(Center),
+        );
     }
     if repository.git_available
-        && repository.rebuild_tools.available()
+        && tools_available
         && !repository.working_copy.matches_revision
         && !repository.busy
     {

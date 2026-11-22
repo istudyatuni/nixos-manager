@@ -7,7 +7,7 @@ use iced::{
 use super::{Message, State, selection};
 use crate::{
     i18n::I18n,
-    rebuild::{Mode, Outcome, Run},
+    rebuild::{Error, Run, Step},
     ui::style::{buttons, colors, containers, spacing},
 };
 
@@ -101,37 +101,51 @@ fn log<'a>(i18n: &I18n, state: &'a State) -> Element<'a, Message> {
 
 pub(super) fn has_error(run: &Run) -> bool {
     run.outcome
-        .is_some_and(|outcome| !matches!(outcome, Outcome::Success | Outcome::Cancelled))
+        .is_some_and(|outcome| matches!(outcome, Err(error) if !matches!(error, Error::Cancelled)))
 }
 
 pub(super) fn rebuild_status(i18n: &I18n, run: &Run) -> (String, Color) {
     let mut args = FluentArgs::new();
-    args.set("mode", i18n.text(run.mode.label()));
+    let step = match run.step {
+        Step::Inspect => "overview-rebuild-step-inspect",
+        Step::Build => "overview-rebuild-step-build",
+        Step::Register => "overview-rebuild-step-register",
+        Step::Boot => "overview-rebuild-step-boot",
+        Step::Activate => "overview-rebuild-step-activate",
+        Step::BootAndActivate => "overview-rebuild-step-switch",
+    };
+    args.set("step", i18n.text(step));
     let (key, color) = match run.outcome {
         None if run.interrupting => ("overview-rebuild-interrupting", colors::INFO),
         None => ("overview-rebuild-running", colors::INFO),
-        Some(Outcome::Success) => (
-            match run.mode {
-                Mode::Test => "overview-rebuild-test-success",
-                Mode::Boot => "overview-rebuild-boot-success",
-                Mode::Switch => "overview-rebuild-switch-success",
+        Some(Ok(())) => (
+            match (run.steps.boot, run.steps.activate) {
+                (false, false) => "overview-rebuild-build-success",
+                (false, true) => "overview-rebuild-activate-success",
+                (true, false) => "overview-rebuild-boot-success",
+                (true, true) => "overview-rebuild-switch-success",
             },
             colors::SUCCESS,
         ),
-        Some(Outcome::Cancelled) => ("overview-rebuild-cancelled", colors::TEXT_MUTED),
-        Some(Outcome::AuthorizationFailed) => ("overview-rebuild-authorization", colors::DANGER),
-        Some(Outcome::Exited(code)) => {
+        Some(Err(Error::Cancelled)) => ("overview-rebuild-cancelled", colors::TEXT_MUTED),
+        Some(Err(Error::AuthorizationFailed)) => ("overview-rebuild-authorization", colors::DANGER),
+        Some(Err(Error::Exited(code))) => {
             args.set("code", code.to_string());
             ("overview-rebuild-exited", colors::DANGER)
         }
-        Some(Outcome::Interrupted) => ("overview-rebuild-interrupted", colors::DANGER),
-        Some(Outcome::LaunchFailed) => ("overview-rebuild-launch-failed", colors::DANGER),
-        Some(Outcome::WaitFailed) => ("overview-rebuild-wait-failed", colors::DANGER),
-        Some(Outcome::InvalidRepository) => ("overview-rebuild-invalid-repository", colors::DANGER),
-        Some(Outcome::Unsynced) => ("overview-rebuild-requires-revision", colors::DANGER),
-        Some(Outcome::MissingHostname) => ("overview-rebuild-hostname", colors::DANGER),
-        Some(Outcome::InvalidPath) => ("overview-rebuild-invalid-path", colors::DANGER),
-        Some(Outcome::MissingFlake) => ("overview-rebuild-missing-flake", colors::DANGER),
+        Some(Err(Error::Interrupted)) => ("overview-rebuild-interrupted", colors::DANGER),
+        Some(Err(Error::LaunchFailed)) => ("overview-rebuild-launch-failed", colors::DANGER),
+        Some(Err(Error::WaitFailed)) => ("overview-rebuild-wait-failed", colors::DANGER),
+        Some(Err(Error::InvalidRepository)) => {
+            ("overview-rebuild-invalid-repository", colors::DANGER)
+        }
+        Some(Err(Error::Unsynced)) => ("overview-rebuild-requires-revision", colors::DANGER),
+        Some(Err(Error::MissingHostname)) => ("overview-rebuild-hostname", colors::DANGER),
+        Some(Err(Error::InvalidPath)) => ("overview-rebuild-invalid-path", colors::DANGER),
+        Some(Err(Error::MissingFlake)) => ("overview-rebuild-missing-flake", colors::DANGER),
+        Some(Err(Error::BuildDirectory)) => ("overview-rebuild-build-directory", colors::DANGER),
+        Some(Err(Error::BuildResult)) => ("overview-rebuild-build-result", colors::DANGER),
+        Some(Err(Error::BuildOutdated)) => ("overview-rebuild-build-outdated", colors::DANGER),
     };
     (i18n.with_args(key, &args), color)
 }
