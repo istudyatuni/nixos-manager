@@ -447,20 +447,19 @@ impl App {
     pub fn view(&self) -> Element<'_, Message> {
         let (title, action, navigation, content) = match &self.screen {
             Screen::Overview => {
-                let repository =
-                    self.config
-                        .as_ref()
-                        .and_then(Config::repository_path)
-                        .map(|path| overview::Repository {
-                            path: config::display_repo_path(path, self.home.as_deref()),
-                            git_available: self.git_available,
-                            rebuild_tools: self.rebuild_tools,
-                            working_copy: &self.working_copy,
-                            steps: self.steps,
-                            needs_build: self.current_build().is_none(),
-                            busy: self.is_busy(),
-                            download: &self.download,
-                        });
+                let repository = self.config.as_ref().and_then(|config| {
+                    config.repository_path().map(|path| overview::Repository {
+                        path: config::display_repo_path(path, self.home.as_deref()),
+                        selected_branch: &config.branch,
+                        git_available: self.git_available,
+                        rebuild_tools: self.rebuild_tools,
+                        working_copy: &self.working_copy,
+                        steps: self.steps,
+                        needs_build: self.current_build().is_none(),
+                        busy: self.is_busy(),
+                        download: &self.download,
+                    })
+                });
                 (
                     self.title(),
                     self.i18n.text("app-open-settings"),

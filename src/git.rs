@@ -42,17 +42,12 @@ pub async fn available(runner: &CommandRunner) -> bool {
 pub struct WorkingCopy {
     pub branch: Option<String>,
     pub commit: Option<String>,
+    pub selected_commit: Option<String>,
     pub has_local_changes: bool,
     pub matches_revision: bool,
 }
 
 impl WorkingCopy {
-    pub fn short_commit(&self) -> Option<&str> {
-        self.commit
-            .as_deref()
-            .map(|commit| commit.get(..12).unwrap_or(commit))
-    }
-
     pub fn clean_head(&self) -> Option<&str> {
         self.commit
             .as_deref()
@@ -66,18 +61,15 @@ pub async fn inspect(runner: &CommandRunner, config: &Config) -> Result<WorkingC
     let has_local_changes = worktree_dirty(runner, path).await?;
     let current_branch = current_branch(runner, path).await.ok();
     let head = revision(runner, path, "HEAD").await.ok();
-    let matches_revision = if current_branch.as_deref() == Some(config.branch.as_bytes())
-        && let Some(head) = &head
-    {
-        revision(runner, path, &tracking_ref(&config.branch))
-            .await
-            .is_ok_and(|expected| *head == expected)
-    } else {
-        false
-    };
+    let commit = head.as_deref().map(commit_id);
+    let selected_commit = tracking_commit(runner, path, &tracking_ref(&config.branch)).await;
+    let matches_revision = current_branch.as_deref() == Some(config.branch.as_bytes())
+        && commit.is_some()
+        && commit == selected_commit;
     Ok(WorkingCopy {
         branch: current_branch.map(|branch| String::from_utf8_lossy(&branch).into_owned()),
-        commit: head.as_deref().map(commit_id),
+        commit,
+        selected_commit,
         has_local_changes,
         matches_revision,
     })
@@ -93,9 +85,11 @@ pub async fn download(runner: &CommandRunner, config: &Config) -> Result<Working
         }
         Err(_) => Err(Error::Path),
     }?;
+    let commit = commit_id(&head);
     Ok(WorkingCopy {
         branch: Some(config.branch.clone()),
-        commit: Some(commit_id(&head)),
+        commit: Some(commit.clone()),
+        selected_commit: Some(commit),
         has_local_changes: false,
         matches_revision: true,
     })
@@ -235,6 +229,25 @@ async fn checkout(
 
 fn tracking_ref(branch: &str) -> String {
     format!("refs/remotes/origin/{branch}")
+}
+
+async fn tracking_commit(runner: &CommandRunner, path: &Path, tracking: &str) -> Option<String> {
+    let refs = run(
+        runner,
+        command().current_dir(path).args([
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            tracking,
+        ]),
+        |_| Error::Revision,
+    )
+    .await
+    .ok()?;
+    // Git also lists refs below the prefix, so match the full name.
+    let prefix = format!("{tracking} ");
+    refs.split(|&byte| byte == b'\n')
+        .find_map(|line| line.strip_prefix(prefix.as_bytes()))
+        .map(commit_id)
 }
 
 async fn current_branch(runner: &CommandRunner, path: &Path) -> Result<Vec<u8>, Error> {

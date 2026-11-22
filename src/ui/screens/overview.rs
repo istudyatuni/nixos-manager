@@ -1,7 +1,9 @@
 use fluent_bundle::FluentArgs;
 use iced::{
     Center, Color, Element, Fill, Font, Padding, Shrink,
-    widget::{button, checkbox, column, container, responsive, row, scrollable, text, text_editor},
+    widget::{
+        Text, button, checkbox, column, container, responsive, row, scrollable, text, text_editor,
+    },
 };
 use std::{borrow::Cow, path::Path};
 
@@ -50,6 +52,7 @@ impl DownloadStatus {
 
 pub struct Repository<'a> {
     pub path: Cow<'a, Path>,
+    pub selected_branch: &'a str,
     pub git_available: bool,
     pub rebuild_tools: rebuild::Tools,
     pub working_copy: &'a git::WorkingCopy,
@@ -139,54 +142,35 @@ fn configured<'a>(
 ) -> Element<'a, Message> {
     let mut args = FluentArgs::new();
     args.set("path", repository.path.to_string_lossy());
+    let working_copy = repository.working_copy;
+    let active_branch = working_copy.branch.as_deref();
+    let active_commit = working_copy.commit.as_deref();
+    let selected_commit = working_copy.selected_commit.as_deref();
     let mut location = column![
         text(i18n.with_args("overview-repository", &args))
             .wrapping(text::Wrapping::WordOrGlyph)
-            .align_x(Center)
+            .align_x(Center),
+        repository_status(
+            i18n,
+            "overview-repository-working-copy",
+            active_branch,
+            active_commit,
+            working_copy.has_local_changes,
+        ),
     ]
     .spacing(spacing::SM)
     .align_x(Center);
-    let working_copy = repository.working_copy;
-    if working_copy.branch.is_some()
-        || working_copy.commit.is_some()
-        || working_copy.has_local_changes
+    if active_branch != Some(repository.selected_branch)
+        || active_commit.is_none()
+        || active_commit != selected_commit
     {
-        let mut status = FluentArgs::new();
-        let branch = match working_copy.branch.as_deref() {
-            Some(name) => {
-                status.set("name", name);
-                i18n.with_args("overview-repository-branch", &status)
-            }
-            None => i18n.text("overview-repository-detached"),
-        };
-        status.set("branch", branch);
-        status.set(
-            "commit",
-            working_copy.short_commit().map_or_else(
-                || i18n.text("overview-repository-no-commit").into(),
-                Cow::Borrowed,
-            ),
-        );
-        status.set(
-            "state",
-            if working_copy.has_local_changes {
-                "dirty"
-            } else {
-                "clean"
-            },
-        );
-        location = location.push(
-            text(i18n.with_args("overview-repository-status", &status))
-                .font(Font::MONOSPACE)
-                .size(14)
-                .color(if working_copy.has_local_changes {
-                    colors::WARNING
-                } else {
-                    colors::TEXT_MUTED
-                })
-                .wrapping(text::Wrapping::WordOrGlyph)
-                .align_x(Center),
-        );
+        location = location.push(repository_status(
+            i18n,
+            "overview-repository-pending",
+            Some(repository.selected_branch),
+            selected_commit,
+            false,
+        ));
     }
     let steps = repository.steps;
     let needs_build = repository.needs_build;
@@ -281,6 +265,49 @@ fn configured<'a>(
         .padding(spacing::XL)
         .style(containers::card)
         .into()
+}
+
+fn repository_status(
+    i18n: &I18n,
+    key: &str,
+    branch: Option<&str>,
+    commit: Option<&str>,
+    dirty: bool,
+) -> Text<'static> {
+    let mut args = FluentArgs::new();
+    let state = if dirty {
+        "dirty"
+    } else if branch.is_none() && commit.is_none() {
+        "missing"
+    } else {
+        "clean"
+    };
+    args.set("state", state);
+    let branch = match branch {
+        Some(name) => {
+            args.set("name", name);
+            i18n.with_args("overview-repository-branch", &args)
+        }
+        None => i18n.text("overview-repository-detached"),
+    };
+    args.set("branch", branch);
+    args.set(
+        "commit",
+        commit.map_or_else(
+            || i18n.text("overview-repository-no-commit").into(),
+            |commit| Cow::Borrowed(commit.get(..12).unwrap_or(commit)),
+        ),
+    );
+    text(i18n.with_args(key, &args))
+        .font(Font::MONOSPACE)
+        .size(14)
+        .color(if dirty {
+            colors::WARNING
+        } else {
+            colors::TEXT_MUTED
+        })
+        .wrapping(text::Wrapping::WordOrGlyph)
+        .align_x(Center)
 }
 
 fn download_status_parts(download: &DownloadStatus) -> Option<(&'static str, Color, Option<&str>)> {

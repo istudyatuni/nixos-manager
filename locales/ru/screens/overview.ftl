@@ -1,11 +1,13 @@
 overview-unconfigured = Укажите репозиторий в настройках
 overview-repository = Используется репозиторий { $path }
-overview-repository-status =
+overview-repository-working-copy =
     { $state ->
-        [dirty] { $branch }, коммит { $commit } (dirty)
-       *[clean] { $branch }, коммит { $commit }
+        [missing] Рабочая копия: —
+        [dirty] Рабочая копия: { $branch }, коммит { $commit } (dirty)
+       *[clean] Рабочая копия: { $branch }, коммит { $commit }
     }
-overview-repository-branch = Ветка { $name }
+overview-repository-pending = Будет переключено на: { $branch }, коммит { $commit }
+overview-repository-branch = ветка { $name }
 overview-repository-detached = HEAD вне ветки
 overview-repository-no-commit = —
 overview-add-to-boot = Добавить в загрузку

@@ -1,11 +1,13 @@
 overview-unconfigured = Specify a repository in Settings
 overview-repository = Using repository { $path }
-overview-repository-status =
+overview-repository-working-copy =
     { $state ->
-        [dirty] { $branch }, commit { $commit } (dirty)
-       *[clean] { $branch }, commit { $commit }
+        [missing] Working copy: —
+        [dirty] Working copy: { $branch }, commit { $commit } (dirty)
+       *[clean] Working copy: { $branch }, commit { $commit }
     }
-overview-repository-branch = Branch { $name }
+overview-repository-pending = Will switch to: { $branch }, commit { $commit }
+overview-repository-branch = branch { $name }
 overview-repository-detached = Detached HEAD
 overview-repository-no-commit = —
 overview-add-to-boot = Add to boot
