@@ -220,7 +220,7 @@ impl App {
             {
                 self.screen = Screen::CacheSettings(Box::new(cache_settings::State::new(
                     self.cache.as_ref().ok().and_then(Option::as_ref),
-                    attic::find(env::var_os("PATH").as_deref()),
+                    attic::available(env::var_os("PATH").as_deref()),
                 )));
             }
             Message::OpenSettings if !self.loading && matches!(self.screen, Screen::Overview) => {
@@ -523,11 +523,12 @@ impl App {
                 self.screen = Screen::Overview;
                 self.inspect_repository()
             }
-            cache_settings::Action::Connect(path, connection) => {
+            cache_settings::Action::Connect(connection) => {
+                self.overview.journal_expanded = true;
                 let home = self.home.clone();
                 let runner = self.commands.clone();
                 Task::perform(
-                    async move { attic::connect(&path, home.as_deref(), runner, connection).await },
+                    async move { attic::connect(home.as_deref(), runner, connection).await },
                     Message::CacheConnected,
                 )
             }

@@ -3,7 +3,7 @@ use std::{
     ffi::OsStr,
     fs, io,
     os::unix::fs::PermissionsExt,
-    path::{self, Path, PathBuf},
+    path::Path,
     time::{Duration, SystemTime},
 };
 
@@ -13,7 +13,7 @@ use tokio::{process::Command, time::timeout};
 use url::Url;
 
 use crate::{
-    command_runner::{CommandRunner, RunError},
+    command_runner::{CommandRunner, OutputError},
     config::{self, CONFIG_DIRECTORY},
 };
 
@@ -24,6 +24,7 @@ pub use token::{Error as TokenError, Token};
 pub(crate) mod tests;
 
 const METADATA_FILE: &str = "attic.json";
+const CLI: &str = "attic";
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_SERVER_NAME: &str = "private";
 
@@ -89,12 +90,10 @@ impl Metadata {
     }
 }
 
-pub fn find(path: Option<&OsStr>) -> Option<PathBuf> {
-    env::split_paths(path?)
-        .map(|directory| directory.join("attic"))
-        // Select the first entry, including a symlink whose target is unavailable.
-        .find(|candidate| candidate.symlink_metadata().is_ok())
-        .and_then(|candidate| path::absolute(candidate).ok())
+pub fn available(path: Option<&OsStr>) -> bool {
+    path.is_some_and(|path| {
+        env::split_paths(path).any(|directory| directory.join(CLI).symlink_metadata().is_ok())
+    })
 }
 
 pub fn valid_name(name: &str) -> bool {
@@ -207,21 +206,19 @@ impl Failure {
 }
 
 pub async fn connect(
-    path: &Path,
     home: Option<&Path>,
     runner: CommandRunner,
     connection: Connection,
 ) -> Result<Metadata, Failure> {
-    let command = || Command::new(path);
-    connect_with(command, home, runner, connection, COMMAND_TIMEOUT).await
+    connect_with(home, runner, connection, COMMAND_TIMEOUT, |_| {}).await
 }
 
 async fn connect_with(
-    command: impl Fn() -> Command,
     home: Option<&Path>,
     runner: CommandRunner,
     Connection { metadata, secret }: Connection,
     command_timeout: Duration,
+    configure_command: impl Fn(&mut Command),
 ) -> Result<Metadata, Failure> {
     let directory = home.map(|home| home.join(CONFIG_DIRECTORY));
     let prepare_error = Failure {
@@ -237,8 +234,15 @@ async fn connect_with(
             .map_err(|_| prepare_error)?
             .map_err(|_| prepare_error)?
     };
-    let runner = runner.with_secret(secret.clone());
+    let runner = runner
+        .with_secret(secret.clone())
+        .with_output_redactor(redact_config_diagnostics);
     let reference = format!("{}:{}", metadata.server_name, metadata.cache_name);
+    let command = || {
+        let mut command = Command::new(CLI);
+        configure_command(&mut command);
+        command
+    };
     let login = || {
         let mut command = command();
         command.args([
@@ -309,13 +313,13 @@ async fn run(
         // Attic can report failed config writes in tracing output while exiting successfully.
         command.env("RUST_LOG", "warn");
     }
-    let output = timeout(duration, runner.private_output(command))
+    let output = timeout(duration, runner.output_with_error_kind(command))
         .await
         .map_err(|_| failure(FailureKind::Timeout))?
         .map_err(|error| {
             failure(match error {
-                RunError::Launch => FailureKind::Launch,
-                RunError::Wait | RunError::Interrupted => FailureKind::Cli,
+                OutputError::Launch(_) => FailureKind::Launch,
+                OutputError::Wait(_) => FailureKind::Cli,
             })
         })?;
 
@@ -342,5 +346,25 @@ async fn run(
         Err(failure(FailureKind::ConfigWrite))
     } else {
         Err(failure(FailureKind::Cli))
+    }
+}
+
+fn redact_config_diagnostics(line: &mut String) {
+    // A parser may echo a source line or a credential from an existing config.
+    if let Some((number, _)) = line.split_once(" |")
+        && number.trim().parse::<usize>().is_ok()
+    {
+        line.truncate(number.len() + 2);
+        line.push_str(" ***");
+    } else if let Some((prefix, rest)) = line.split_once("Unknown token ")
+        && let Some(value) = rest.strip_suffix(" outside a machine block")
+    {
+        let start = prefix.len() + "Unknown token ".len();
+        line.replace_range(start..start + value.len(), "***");
+    } else if let Some((prefix, rest)) = line.split_once("Line \"")
+        && let Some(value) = rest.strip_suffix("\" isn't valid")
+    {
+        let start = prefix.len() + "Line \"".len();
+        line.replace_range(start..start + value.len(), "***");
     }
 }

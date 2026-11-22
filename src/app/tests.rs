@@ -100,15 +100,12 @@ async fn cache_toolbar_button_opens_a_separate_dialog_without_a_repository() {
     assert!(app.config.is_none());
     assert!(matches!(app.screen, Screen::CacheSettings(_)));
 
-    app.screen = Screen::CacheSettings(Box::new(cache_settings::State::new(None, None)));
+    app.screen = Screen::CacheSettings(Box::new(cache_settings::State::new(None, false)));
     let labels = layout(&mut app.view(), &renderer, size).2;
     assert!(labels.contains("Could not find attic in PATH"));
     assert!(!labels.contains("Server URL"));
 
-    app.screen = Screen::CacheSettings(Box::new(cache_settings::State::new(
-        None,
-        Some(PathBuf::from("/test/attic")),
-    )));
+    app.screen = Screen::CacheSettings(Box::new(cache_settings::State::new(None, true)));
     let labels = layout(&mut app.view(), &renderer, size).2;
     let field_positions = ["Server URL", "Local server name", "Token", "Cache name"]
         .map(|name| labels.bounds(name).y);
@@ -134,7 +131,7 @@ async fn compact_cache_settings_keep_connection_errors_and_actions_in_view() {
     assert!(toolbar.bounds("Настройки кеша").x < toolbar.bounds("Настройки").x);
     assert!(toolbar.bounds("Настройки").x + toolbar.bounds("Настройки").width <= size.width);
 
-    let mut state = cache_settings::State::new(None, Some(PathBuf::from("/test/attic")));
+    let mut state = cache_settings::State::new(None, true);
     let token = jwt(NOW + 3600, serde_json::json!({ "main": { "r": 1 } }));
     state.update(
         CacheMessage::UrlChanged("https://cache.example.org".into()),
@@ -144,7 +141,7 @@ async fn compact_cache_settings_keep_connection_errors_and_actions_in_view() {
     state.update(CacheMessage::CacheSelected("main".into()), fixed_time());
     assert!(matches!(
         state.update(CacheMessage::Connect, fixed_time()),
-        cache_settings::Action::Connect(_, _)
+        cache_settings::Action::Connect(_)
     ));
     state.connected(
         &Err(attic::Failure {

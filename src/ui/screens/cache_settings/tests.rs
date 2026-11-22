@@ -19,7 +19,7 @@ fn saved_cache() -> Metadata {
 #[test]
 fn opens_with_saved_values_and_an_empty_token_and_revalidates_the_selection() {
     let saved = saved_cache();
-    let mut state = State::new(Some(&saved), Some(PathBuf::from("/test/attic")));
+    let mut state = State::new(Some(&saved), true);
     assert_eq!(state.url, saved.server_url);
     assert_eq!(state.server_name, saved.server_name);
     assert_eq!(state.cache_name.as_deref(), Some("main"));
@@ -68,7 +68,7 @@ fn opens_with_saved_values_and_an_empty_token_and_revalidates_the_selection() {
         state.update(Message::Close, fixed_time()),
         Action::Close
     ));
-    let reopened = State::new(Some(&saved), Some(PathBuf::from("/test/attic")));
+    let reopened = State::new(Some(&saved), true);
     assert_eq!(reopened.url, saved.server_url);
     assert_eq!(reopened.server_name, saved.server_name);
     assert_eq!(reopened.cache_name.as_deref(), Some("main"));
@@ -78,13 +78,13 @@ fn opens_with_saved_values_and_an_empty_token_and_revalidates_the_selection() {
 #[test]
 fn defers_closing_during_connection_and_keeps_the_draft_on_failure() {
     let saved = saved_cache();
-    let mut state = State::new(Some(&saved), Some(PathBuf::from("/test/attic")));
+    let mut state = State::new(Some(&saved), true);
     let token = jwt(NOW + 3600, json!({ "main": { "r": 1 } }));
     state.update(Message::TokenChanged(token.clone()), fixed_time());
 
     assert!(matches!(
         state.update(Message::Connect, fixed_time()),
-        Action::Connect(_, _)
+        Action::Connect(_)
     ));
     assert!(state.busy());
     assert!(matches!(
@@ -111,7 +111,7 @@ fn defers_closing_during_connection_and_keeps_the_draft_on_failure() {
 
     assert!(matches!(
         state.update(Message::Connect, fixed_time()),
-        Action::Connect(_, _)
+        Action::Connect(_)
     ));
     assert!(matches!(
         state.update(Message::Close, fixed_time()),

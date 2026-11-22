@@ -31,6 +31,12 @@ pub struct CommandRunner {
     journal: mpsc::Sender<LogLine>,
     generation: u64,
     secret: String,
+    output_redactor: Option<fn(&mut String)>,
+}
+
+pub enum OutputError {
+    Launch(io::Error),
+    Wait(io::Error),
 }
 
 pub enum RunError {
@@ -63,11 +69,17 @@ impl CommandRunner {
             journal,
             generation: 0,
             secret: String::new(),
+            output_redactor: None,
         }
     }
 
     pub fn with_secret(mut self, secret: String) -> Self {
         self.secret = secret;
+        self
+    }
+
+    pub fn with_output_redactor(mut self, redact: fn(&mut String)) -> Self {
+        self.output_redactor = Some(redact);
         self
     }
 
@@ -128,36 +140,34 @@ impl CommandRunner {
 
     /// Streams both pipes while retaining their original bytes for callers that parse stdout.
     pub async fn output(&self, command: &mut Command) -> io::Result<Output> {
+        self.output_with_error_kind(command)
+            .await
+            .map_err(|error| match error {
+                OutputError::Launch(error) | OutputError::Wait(error) => error,
+            })
+    }
+
+    /// Streams output and distinguishes launch failures from later I/O errors.
+    pub async fn output_with_error_kind(
+        &self,
+        command: &mut Command,
+    ) -> Result<Output, OutputError> {
         self.log_command(command).await;
         let result = self.capture(command).await;
-        if let Err(error) = &result {
+        if let Err(OutputError::Launch(error) | OutputError::Wait(error)) = &result {
             self.log(self.redact(&error.to_string())).await;
         }
         result
     }
 
-    /// Captures output from a command that can report secrets unknown to the runner.
-    pub async fn private_output(&self, command: &mut Command) -> Result<Output, RunError> {
-        self.log_command(command).await;
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|_| RunError::Launch)?
-            .wait_with_output()
-            .await
-            .map_err(|_| RunError::Wait)
-    }
-
-    async fn capture(&self, command: &mut Command) -> io::Result<Output> {
+    async fn capture(&self, command: &mut Command) -> Result<Output, OutputError> {
         let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
-            .spawn()?;
+            .spawn()
+            .map_err(OutputError::Launch)?;
         let mut stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
         let mut stderr = BufReader::new(child.stderr.take().expect("piped stderr"));
         let mut out = Vec::new();
@@ -166,7 +176,8 @@ impl CommandRunner {
             child.wait(),
             self.read_output(&mut stdout, Some(&mut out), None),
             self.read_output(&mut stderr, Some(&mut err), None),
-        )?;
+        )
+        .map_err(OutputError::Wait)?;
         Ok(Output {
             status,
             stdout: out,
@@ -333,7 +344,10 @@ impl CommandRunner {
     }
 
     async fn log_output_line(&self, bytes: &[u8]) {
-        let line = self.redact(&String::from_utf8_lossy(bytes));
+        let mut line = self.redact(&String::from_utf8_lossy(bytes));
+        if let Some(redact) = self.output_redactor {
+            redact(&mut line);
+        }
         // Porcelain Git output uses NUL separators.
         self.log(line.replace('\0', "\\0")).await;
     }

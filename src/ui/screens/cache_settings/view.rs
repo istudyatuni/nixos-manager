@@ -48,7 +48,7 @@ impl State {
             body = body.push(note(i18n, "cache-settings-load-error", colors::WARNING));
         }
         let mut submit = None;
-        if self.cli.is_some() {
+        if self.cli_available {
             let (form, can_connect) = self.form(i18n, metadata);
             body = body.push(form);
             let label = if metadata.is_some() {
@@ -78,7 +78,7 @@ impl State {
             args.set("date", metadata.expiration_rfc3339());
             body = body.push(text(i18n.with_args("cache-settings-expiration", &args)).size(14));
         }
-        if self.cli.is_some() {
+        if self.cli_available {
             body = body.push(note(
                 i18n,
                 "cache-settings-config-details",
@@ -129,8 +129,7 @@ impl State {
         let footer = column![]
             .push(self.status_view(i18n))
             .push(
-                self.cli
-                    .is_some()
+                self.cli_available
                     .then(|| note(i18n, "cache-settings-config-changes", colors::TEXT_MUTED)),
             )
             .push(actions)

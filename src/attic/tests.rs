@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
 use tempfile::{TempDir, tempdir};
@@ -74,16 +76,14 @@ fn validates_addresses_and_attic_names() {
 }
 
 #[test]
-fn selects_the_first_path_entry_without_testing_executability() {
+fn detects_attic_on_path() {
     let first = tempdir().unwrap();
     let second = tempdir().unwrap();
     let path = env::join_paths([first.path(), second.path()]).unwrap();
-    assert_eq!(find(None), None);
-    assert_eq!(find(Some(&path)), None);
+    assert!(!available(None));
+    assert!(!available(Some(&path)));
     fs::write(second.path().join("attic"), "").unwrap();
-    assert_eq!(find(Some(&path)), Some(second.path().join("attic")));
-    fs::create_dir(first.path().join("attic")).unwrap();
-    assert_eq!(find(Some(&path)), Some(first.path().join("attic")));
+    assert!(available(Some(&path)));
 }
 
 #[test]
@@ -244,22 +244,23 @@ impl Fixture {
         .unwrap();
         let (sender, mut receiver) = mpsc::channel(32);
         let runner = CommandRunner::new(sender);
+        let tools_path = env::var_os("PATH").unwrap_or_default();
         let result = connect_with(
-            || {
-                let mut command = Command::new(&self.attic);
+            Some(self.home.path()),
+            runner,
+            connection,
+            command_timeout,
+            |command| {
                 command
+                    .env("PATH", self.home.path())
+                    .env("ATTIC_TEST_TOOLS_PATH", &tools_path)
                     .env("XDG_CONFIG_HOME", &self.user_config)
                     .env("ATTIC_TEST_USER_CONFIG", &self.user_config)
                     .env("ATTIC_TEST_METADATA_DIR", &self.metadata_directory)
                     .env("ATTIC_TEST_LOG", &self.log)
                     .env("ATTIC_TEST_XDG_LOG", &self.xdg_log)
                     .env("ATTIC_TEST_SCENARIO", scenario);
-                command
             },
-            Some(self.home.path()),
-            runner,
-            connection,
-            command_timeout,
         )
         .await;
         let mut journal = Vec::new();
@@ -270,6 +271,12 @@ impl Fixture {
             journal
                 .iter()
                 .all(|line| !line.text.contains(token) && !line.text.contains("existing-token"))
+        );
+        assert!(
+            journal
+                .iter()
+                .filter(|line| line.is_command)
+                .all(|line| line.text.starts_with("$ attic "))
         );
         assert!(!format!("{result:?}").contains(token));
         (result, journal)
@@ -339,7 +346,34 @@ async fn connects_renews_switches_and_forgets_a_cache() {
             "apply use private:main",
         ],
     );
-    assert_eq!(journal.len(), 4);
+    assert_eq!(
+        journal
+            .iter()
+            .filter(|line| line.is_command)
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "$ attic login --set-default private https://cache.example.org/ \"***\"",
+            "$ attic cache info private:main",
+            "$ attic login --set-default private https://cache.example.org/ \"***\"",
+            "$ attic use private:main",
+        ]
+    );
+    assert!(
+        journal
+            .iter()
+            .any(|line| !line.is_command && line.text == "Cache: main")
+    );
+    assert!(
+        journal
+            .iter()
+            .any(|line| !line.is_command && line.text == "Configuring private")
+    );
+    assert!(
+        journal
+            .iter()
+            .any(|line| !line.is_command && line.text == "Using cache private:main")
+    );
     assert!(!calls.contains(&token));
     let paths = fixture.xdg_paths();
     assert_eq!(paths[0], paths[1]);
@@ -388,20 +422,34 @@ async fn connects_renews_switches_and_forgets_a_cache() {
 
 #[tokio::test]
 async fn leaves_user_files_intact_on_failed_verification() {
-    for (scenario, stage, kind, calls) in [
+    for (scenario, stage, kind, calls, diagnostic) in [
         (
             "unauthorized",
             Stage::VerifyCache,
             FailureKind::AccessDenied,
             2,
+            "Error: Unauthorized: Unauthorized.",
         ),
-        ("network", Stage::VerifyCache, FailureKind::Cli, 2),
-        ("timeout", Stage::VerifyCache, FailureKind::Timeout, 2),
+        (
+            "network",
+            Stage::VerifyCache,
+            FailureKind::Cli,
+            2,
+            "Error: could not connect to server",
+        ),
+        (
+            "timeout",
+            Stage::VerifyCache,
+            FailureKind::Timeout,
+            2,
+            "Waiting for the server",
+        ),
         (
             "verify-login-write-failed",
             Stage::VerifyLogin,
             FailureKind::ConfigWrite,
             1,
+            "Could not save modified configuration: ***",
         ),
     ] {
         let fixture = Fixture::new();
@@ -418,7 +466,12 @@ async fn leaves_user_files_intact_on_failed_verification() {
         assert_eq!(error, Failure { stage, kind });
         assert!(!error.may_have_applied());
         assert_eq!(fixture.calls().lines().count(), calls);
-        assert_eq!(journal.len(), calls);
+        assert_eq!(journal.iter().filter(|line| line.is_command).count(), calls);
+        assert!(
+            journal
+                .iter()
+                .any(|line| !line.is_command && line.text == diagnostic)
+        );
         assert!(fixture.xdg_paths().iter().all(|path| !path.exists()));
         assert_eq!(fixture.files().map(|file| fs::read(file).unwrap()), before);
         assert_eq!(fixture.stored(), Some(metadata));
@@ -448,7 +501,7 @@ async fn reports_partial_application_and_preserves_previous_metadata_until_retry
         let metadata = fixture.seed();
         let [profile, netrc, nix_conf] = fixture.files();
         let token = jwt(NOW + 3600, json!({ "main": { "r": 1 } }));
-        let (result, _) = fixture.run(scenario, &token, "main", TEST_TIMEOUT).await;
+        let (result, journal) = fixture.run(scenario, &token, "main", TEST_TIMEOUT).await;
         let error = result.unwrap_err();
         assert_eq!(error, Failure { stage, kind });
         assert!(error.may_have_applied());
@@ -468,6 +521,14 @@ async fn reports_partial_application_and_preserves_previous_metadata_until_retry
             Stage::ApplyCache => {
                 assert!(fs::read_to_string(&netrc).unwrap().contains(&token));
                 assert_eq!(fs::read_to_string(&nix_conf).unwrap(), "old nix.conf");
+                for diagnostic in [
+                    "Error: Permission denied writing nix.conf",
+                    "3 | ***",
+                    "Error: Unknown token *** outside a machine block",
+                    "Error: Line \"***\" isn't valid",
+                ] {
+                    assert!(journal.iter().any(|line| line.text == diagnostic));
+                }
             }
             Stage::Save => {
                 assert!(fs::read_to_string(&netrc).unwrap().contains(&token));

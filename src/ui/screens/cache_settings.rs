@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use chrono::{DateTime, Utc};
 
 use crate::attic::{self, Connection, Failure, Metadata, Token, TokenError, ValidationError};
@@ -26,7 +24,7 @@ pub enum Message {
 pub enum Action {
     None,
     Close,
-    Connect(PathBuf, Connection),
+    Connect(Connection),
     Forget,
     OpenGuide,
 }
@@ -43,7 +41,7 @@ enum Status {
 }
 
 pub struct State {
-    cli: Option<PathBuf>,
+    cli_available: bool,
     url: String,
     server_name: String,
     token: String,
@@ -55,9 +53,9 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(saved: Option<&Metadata>, cli: Option<PathBuf>) -> Self {
+    pub fn new(saved: Option<&Metadata>, cli_available: bool) -> Self {
         Self {
-            cli,
+            cli_available,
             url: saved.map_or_else(String::new, |saved| saved.server_url.clone()),
             server_name: saved.map_or_else(
                 || attic::DEFAULT_SERVER_NAME.to_owned(),
@@ -89,9 +87,9 @@ impl State {
         }
         match message {
             Message::Connect => {
-                let Some(path) = self.cli.clone() else {
+                if !self.cli_available {
                     return Action::None;
-                };
+                }
                 return match Connection::new(
                     &self.url,
                     &self.server_name,
@@ -101,7 +99,7 @@ impl State {
                 ) {
                     Ok(connection) => {
                         self.status = Status::Connecting;
-                        Action::Connect(path, connection)
+                        Action::Connect(connection)
                     }
                     Err(error) => {
                         self.status = Status::Invalid(error);
@@ -165,7 +163,7 @@ impl State {
     pub fn forgotten(&mut self, succeeded: bool) -> bool {
         let close_requested = std::mem::take(&mut self.close_requested);
         if succeeded {
-            *self = Self::new(None, self.cli.take());
+            *self = Self::new(None, self.cli_available);
             self.status = Status::Forgotten;
             close_requested
         } else {
