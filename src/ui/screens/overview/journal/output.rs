@@ -10,7 +10,7 @@ use iced::{
 };
 
 use super::Message;
-use crate::ui::style::spacing;
+use crate::{command_runner::LogLine, ui::style::spacing};
 
 mod log;
 mod scroll;
@@ -32,7 +32,7 @@ impl Output {
         self.log.borrow().text()
     }
 
-    pub fn append(&mut self, lines: impl IntoIterator<Item = String>) {
+    pub fn append(&mut self, lines: impl IntoIterator<Item = LogLine>) {
         self.log.get_mut().append(lines);
     }
 
@@ -91,7 +91,7 @@ impl Widget<Message, Theme, Renderer> for View<'_> {
         _cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        self.output.log.borrow().draw(
+        self.output.log.borrow_mut().draw(
             renderer,
             layout.bounds().shrink(spacing::MD),
             *viewport,

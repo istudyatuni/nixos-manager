@@ -222,8 +222,7 @@ impl App {
                 self.overview.append_journal(
                     lines
                         .into_iter()
-                        .filter(|line| line.generation == generation)
-                        .map(|line| line.text),
+                        .filter(|line| line.generation == generation),
                 );
             }
             Message::Rebuild(event) => {

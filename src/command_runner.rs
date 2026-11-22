@@ -17,11 +17,13 @@ use tokio::{
 };
 
 const INTERRUPT_CHAR: u8 = 3;
+pub const COMMAND_PROMPT: &str = "$ ";
 
 #[derive(Clone)]
 pub struct LogLine {
     pub generation: u64,
     pub text: String,
+    pub is_command: bool,
 }
 
 #[derive(Clone)]
@@ -68,21 +70,31 @@ impl CommandRunner {
     }
 
     async fn log(&self, text: String) {
+        self.send_log(text, false).await;
+    }
+
+    async fn send_log(&self, text: String, is_command: bool) {
         let _ = self
             .journal
             .send(LogLine {
                 generation: self.generation,
                 text,
+                is_command,
             })
             .await;
     }
 
     async fn log_command(&self, command: &Command) {
         let command = command.as_std();
-        let mut line = String::from("$");
-        for word in std::iter::once(command.get_program()).chain(command.get_args()) {
+        let mut line = String::from(COMMAND_PROMPT);
+        for (index, word) in std::iter::once(command.get_program())
+            .chain(command.get_args())
+            .enumerate()
+        {
             let word = self.redact(&word.to_string_lossy());
-            line.push(' ');
+            if index > 0 {
+                line.push(' ');
+            }
             if !word.is_empty()
                 && word
                     .bytes()
@@ -93,7 +105,7 @@ impl CommandRunner {
                 line.push_str(&format!("{word:?}"));
             }
         }
-        self.log(line).await;
+        self.send_log(line, true).await;
     }
 
     /// Streams both pipes while retaining their original bytes for callers that parse stdout.

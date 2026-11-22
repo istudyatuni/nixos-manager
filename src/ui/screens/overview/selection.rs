@@ -7,7 +7,7 @@ use iced::{
 };
 
 use super::{DownloadStatus, Message, download_status_parts, journal};
-use crate::{i18n::I18n, rebuild::Run, ui::style::inputs};
+use crate::{command_runner::LogLine, i18n::I18n, rebuild::Run, ui::style::inputs};
 
 #[derive(Clone, Copy)]
 pub enum Target {
@@ -62,7 +62,7 @@ impl State {
         self.journal = journal::Output::default();
     }
 
-    pub fn append_journal(&mut self, lines: impl IntoIterator<Item = String>) {
+    pub fn append_journal(&mut self, lines: impl IntoIterator<Item = LogLine>) {
         self.journal.append(lines);
     }
 

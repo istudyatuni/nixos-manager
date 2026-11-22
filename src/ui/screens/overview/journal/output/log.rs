@@ -10,7 +10,10 @@ use iced::{
     alignment,
 };
 
-use crate::ui::style::colors;
+use crate::{
+    command_runner::{COMMAND_PROMPT, LogLine},
+    ui::style::colors,
+};
 
 const LOG_CAPACITY: usize = 10_000;
 const FONT_SIZE: Pixels = Pixels(13.0);
@@ -28,6 +31,8 @@ pub(super) struct Log {
 
 struct Line {
     text: String,
+    is_command: bool,
+    command_drawn: bool,
     paragraph: Option<Paragraph>,
     top: f64,
 }
@@ -53,9 +58,11 @@ impl Log {
         })
     }
 
-    pub(super) fn append(&mut self, lines: impl IntoIterator<Item = String>) {
-        self.lines.extend(lines.into_iter().map(|text| Line {
-            text,
+    pub(super) fn append(&mut self, lines: impl IntoIterator<Item = LogLine>) {
+        self.lines.extend(lines.into_iter().map(|line| Line {
+            text: line.text,
+            is_command: line.is_command,
+            command_drawn: false,
             paragraph: None,
             top: 0.0,
         }));
@@ -63,6 +70,18 @@ impl Log {
         self.lines.drain(..excess);
         self.first += excess;
         self.laid_out = self.laid_out.saturating_sub(excess);
+        if excess > 0 {
+            // Shifting rows can replace a command at the same screen position.
+            // Invalidate old weak references since Iced compares paragraphs by metrics.
+            let bounds = Size::new(self.width, f32::INFINITY);
+            for line in self.lines.iter_mut().filter(|line| line.command_drawn) {
+                line.paragraph
+                    .as_mut()
+                    .expect("drawn command")
+                    .resize(bounds);
+                line.command_drawn = false;
+            }
+        }
         if let Some((anchor, end)) = &mut self.selection {
             let first = Position {
                 line: self.first,
@@ -86,9 +105,20 @@ impl Log {
                     paragraph.resize(bounds);
                     paragraph
                 }
-                None => line
-                    .paragraph
-                    .insert(Paragraph::with_text(log_text(line.text.as_str(), bounds))),
+                None => {
+                    let paragraph = if line.is_command
+                        && let Some(command) = line.text.strip_prefix(COMMAND_PROMPT)
+                    {
+                        let spans: [text::Span<'_>; 2] = [
+                            text::Span::new(COMMAND_PROMPT),
+                            text::Span::new(command).color(colors::TEXT_MUTED),
+                        ];
+                        Paragraph::with_spans(log_text(spans.as_slice(), bounds))
+                    } else {
+                        Paragraph::with_text(log_text(line.text.as_str(), bounds))
+                    };
+                    line.paragraph.insert(paragraph)
+                }
             };
             line.top = self.bottom;
             self.bottom += f64::from(paragraph.min_height().max(LINE_HEIGHT.0));
@@ -162,7 +192,7 @@ impl Log {
     }
 
     pub(super) fn draw(
-        &self,
+        &mut self,
         renderer: &mut Renderer,
         bounds: Rectangle,
         viewport: Rectangle,
@@ -176,7 +206,7 @@ impl Log {
         let top = self.top();
         let selection = if focused { self.selection() } else { None };
 
-        for (index, line) in self.lines.range(start..).enumerate() {
+        for (index, line) in self.lines.range_mut(start..).enumerate() {
             let y = bounds.y + (line.top - top) as f32;
             if y >= bottom {
                 break;
@@ -214,16 +244,20 @@ impl Log {
                     }
                 }
             }
-            if !line.text.is_empty() {
-                let position = Point::new(bounds.x, y);
-                let size = Size::new(bounds.width, paragraph.min_height());
+            let position = Point::new(bounds.x, y);
+            let size = Size::new(bounds.width, paragraph.min_height());
+            let clip_bounds = Rectangle::new(position, size);
+            if line.is_command {
+                renderer.fill_paragraph(paragraph, position, colors::TEXT, clip_bounds);
+                line.command_drawn = true;
+            } else if !line.text.is_empty() {
                 // Cached text compares the contents as well as the bounds
                 // when the renderer checks what changed in a full journal.
                 renderer.fill_text(
                     log_text(line.text.clone(), size),
                     position,
                     colors::TEXT,
-                    Rectangle::new(position, size),
+                    clip_bounds,
                 );
             }
         }
