@@ -47,8 +47,9 @@ pub enum Action {
 
 pub struct BranchLookup {
     pub repository: String,
-    pub path: Option<PathBuf>,
+    pub path: PathBuf,
     pub token: String,
+    pub check_local: bool,
     pub check_remote: bool,
 }
 
@@ -128,15 +129,16 @@ impl State {
 
     pub fn branch_lookup(&self, allow_remote: bool) -> Option<BranchLookup> {
         let repository = self.repository.as_ref()?;
-        let local_pending = matches!(self.local, Lookup::Pending);
+        let check_local = matches!(self.local, Lookup::Pending);
         let check_remote = allow_remote && matches!(self.remote, Lookup::Pending);
-        if !self.git_available || (!local_pending && !check_remote) {
+        if !self.git_available || (!check_local && !check_remote) {
             return None;
         }
         Some(BranchLookup {
             repository: repository.clone(),
-            path: local_pending.then(|| self.draft.path.clone()),
+            path: self.draft.path.clone(),
             token: self.draft.token.trim().to_owned(),
+            check_local,
             check_remote,
         })
     }

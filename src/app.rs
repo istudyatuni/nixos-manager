@@ -2,7 +2,7 @@ use std::{env, path::PathBuf, sync::Arc, time::Duration};
 
 use iced::{
     Center, Element, Event, Fill, Subscription, Task, Theme, clipboard, event,
-    futures::{SinkExt, stream::unfold},
+    futures::{FutureExt, SinkExt, stream::unfold},
     keyboard, stream,
     widget::{button, column, container, operation, row, space, text},
     window,
@@ -401,18 +401,31 @@ impl App {
         self.settings_lookup_generation += 1;
         let generation = self.settings_lookup_generation;
         let runner = self.commands.clone().with_secret(lookup.token.clone());
-        let mut tasks = Vec::new();
-        if let Some(path) = lookup.path {
-            let path = self
-                .home
-                .as_deref()
-                .and_then(|home| config::absolute_repo_path(&path, home).ok());
+        let path = self
+            .home
+            .as_deref()
+            .and_then(|home| config::absolute_repo_path(&lookup.path, home).ok());
+        // Both lookups use the same origin check before reading the working copy.
+        let worktree = {
             let runner = runner.clone();
             let repository = lookup.repository.clone();
+            async move {
+                let path = path?;
+                git::check_worktree(&runner, &path, &repository)
+                    .await
+                    .ok()?;
+                Some(path)
+            }
+            .shared()
+        };
+        let mut tasks = Vec::new();
+        if lookup.check_local {
+            let runner = runner.clone();
+            let worktree = worktree.clone();
             let (task, handle) = Task::perform(
                 async move {
-                    match path {
-                        Some(path) => git::local_branches(&runner, &path, &repository).await,
+                    match worktree.await {
+                        Some(path) => git::read_branches(&runner, &path).await.unwrap_or_default(),
                         None => Vec::new(),
                     }
                 },
@@ -423,14 +436,20 @@ impl App {
             tasks.push(task);
         }
         if lookup.check_remote {
-            let (task, handle) =
-                Task::perform(
-                    async move {
-                        git::remote_branches(&runner, &lookup.repository, &lookup.token).await
-                    },
-                    move |result| Message::SettingsRemoteBranches(generation, result),
-                )
-                .abortable();
+            let (task, handle) = Task::perform(
+                async move {
+                    let worktree = worktree.await;
+                    git::remote_branches(
+                        &runner,
+                        &lookup.repository,
+                        &lookup.token,
+                        worktree.as_deref(),
+                    )
+                    .await
+                },
+                move |result| Message::SettingsRemoteBranches(generation, result),
+            )
+            .abortable();
             state.remote_branches_started(generation, handle);
             tasks.push(task);
         }

@@ -2,8 +2,10 @@ use std::{
     cmp::Reverse,
     collections::HashMap,
     env,
+    ffi::OsStr,
     io::{self, BufRead, Write},
-    path::Path,
+    os::unix::ffi::OsStrExt,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -75,14 +77,7 @@ pub fn branch_names(local: &[Branch], remote: &[Branch]) -> Vec<String> {
         .collect()
 }
 
-pub async fn local_branches(runner: &CommandRunner, path: &Path, repository: &str) -> Vec<Branch> {
-    if check_worktree(runner, path, repository).await.is_err() {
-        return Vec::new();
-    }
-    read_branches(runner, path).await.unwrap_or_default()
-}
-
-async fn read_branches(runner: &CommandRunner, path: &Path) -> Result<Vec<Branch>, Error> {
+pub async fn read_branches(runner: &CommandRunner, path: &Path) -> Result<Vec<Branch>, Error> {
     let output = run(
         runner,
         command()
@@ -116,6 +111,7 @@ pub async fn remote_branches(
     runner: &CommandRunner,
     repository: &str,
     token: &str,
+    reference: Option<&Path>,
 ) -> Result<RemoteBranches, RemoteBranchesError> {
     use RemoteBranchesError::{Network, Unavailable};
 
@@ -133,24 +129,26 @@ pub async fn remote_branches(
     let mut git =
         network_command(directory.path(), repository, token, remote).map_err(|_| Unavailable)?;
     // A treeless shallow clone keeps branch-tip commit dates out of the working copy.
-    git.env("LC_ALL", "C")
-        .args([
-            "-c",
-            "http.lowSpeedLimit=1",
-            "-c",
-            "http.lowSpeedTime=10",
-            "clone",
-            "--bare",
-            "--depth=1",
-            "--no-single-branch",
-            "--filter=tree:0",
-            "--no-tags",
-            "--no-recurse-submodules",
-            "--template=",
-            "--",
-            repository,
-        ])
-        .arg(directory.path());
+    git.env("LC_ALL", "C").args([
+        "-c",
+        "http.lowSpeedLimit=1",
+        "-c",
+        "http.lowSpeedTime=10",
+        "clone",
+        "--bare",
+        "--depth=1",
+        "--no-single-branch",
+        "--filter=tree:0",
+        "--no-tags",
+        "--no-recurse-submodules",
+        "--template=",
+    ]);
+    if let Some(worktree) = reference
+        && let Some(reference) = alternate_for(runner, worktree).await
+    {
+        git.arg("--reference-if-able").arg(reference);
+    }
+    git.args(["--", repository]).arg(directory.path());
     let output = tokio::time::timeout(Duration::from_secs(15), runner.output(&mut git))
         .await
         .map_err(|_| Network)?
@@ -175,6 +173,24 @@ pub async fn remote_branches(
         branches,
         default_branch,
     })
+}
+
+async fn alternate_for(runner: &CommandRunner, path: &Path) -> Option<PathBuf> {
+    let git_dir = run(
+        runner,
+        command().current_dir(path).args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ]),
+        |_| Error::NotRepository,
+    )
+    .await
+    .ok()?;
+    let git_dir = git_dir.strip_suffix(b"\n")?;
+    // Git writes alternate paths one per line.
+    (!git_dir.is_empty() && !git_dir.contains(&b'\n'))
+        .then(|| PathBuf::from(OsStr::from_bytes(git_dir)))
 }
 
 fn remote_transport_failed(stderr: &[u8]) -> bool {
@@ -469,7 +485,7 @@ fn commit_id(revision: &[u8]) -> String {
     String::from_utf8_lossy(revision.trim_ascii()).into_owned()
 }
 
-async fn check_worktree(
+pub async fn check_worktree(
     runner: &CommandRunner,
     path: &Path,
     repository: &str,
