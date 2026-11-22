@@ -53,8 +53,8 @@ pub enum Message {
     Overview(overview::Message),
     Settings(settings::Message),
     FocusSettingsInput(bool),
-    SettingsBranches(u64, Vec<String>),
-    SettingsHead(u64, Option<String>),
+    SettingsLocalBranches(u64, Vec<git::Branch>),
+    SettingsRemoteBranches(u64, Result<git::RemoteBranches, git::RemoteBranchesError>),
     Loaded(Result<Option<Config>, LoadError>, bool, rebuild::Tools),
     Saved(Result<Config, SaveError>),
     Downloaded(Result<git::WorkingCopy, git::Error>),
@@ -188,7 +188,7 @@ impl App {
                     self.home.as_deref(),
                     self.git_available,
                 )));
-                return self.lookup_settings_branches(false);
+                return self.lookup_settings_branches(true);
             }
             Message::CloseSettings => {
                 if matches!(&self.screen, Screen::Settings(state) if !state.saving()) {
@@ -338,15 +338,16 @@ impl App {
                     };
                 }
             }
-            Message::SettingsBranches(generation, branches) => {
+            Message::SettingsLocalBranches(generation, branches) => {
                 if let Screen::Settings(state) = &mut self.screen {
-                    state.branches_finished(generation, branches);
+                    state.local_branches_finished(generation, branches);
                 }
             }
-            Message::SettingsHead(generation, branch) => {
+            Message::SettingsRemoteBranches(generation, result) => {
                 let can_save = !self.is_busy();
                 if let Screen::Settings(state) = &mut self.screen
-                    && let Some(draft) = state.head_finished(generation, branch, can_save)
+                    && let Some(draft) =
+                        state.remote_branches_finished(generation, result, can_save)
                 {
                     return self.save_settings(draft);
                 }
@@ -390,11 +391,11 @@ impl App {
         self.download.is_running() || self.rebuild.as_ref().is_some_and(rebuild::Run::is_running)
     }
 
-    fn lookup_settings_branches(&mut self, allow_head: bool) -> Task<Message> {
+    fn lookup_settings_branches(&mut self, allow_remote: bool) -> Task<Message> {
         let Screen::Settings(state) = &mut self.screen else {
             return Task::none();
         };
-        let Some(lookup) = state.branch_lookup(allow_head) else {
+        let Some(lookup) = state.branch_lookup(allow_remote) else {
             return Task::none();
         };
         self.settings_lookup_generation += 1;
@@ -415,19 +416,22 @@ impl App {
                         None => Vec::new(),
                     }
                 },
-                move |branches| Message::SettingsBranches(generation, branches),
+                move |branches| Message::SettingsLocalBranches(generation, branches),
             )
             .abortable();
-            state.branches_started(generation, handle);
+            state.local_branches_started(generation, handle);
             tasks.push(task);
         }
-        if lookup.check_head {
-            let (task, handle) = Task::perform(
-                async move { git::remote_head(&runner, &lookup.repository, &lookup.token).await },
-                move |branch| Message::SettingsHead(generation, branch),
-            )
-            .abortable();
-            state.head_started(generation, handle);
+        if lookup.check_remote {
+            let (task, handle) =
+                Task::perform(
+                    async move {
+                        git::remote_branches(&runner, &lookup.repository, &lookup.token).await
+                    },
+                    move |result| Message::SettingsRemoteBranches(generation, result),
+                )
+                .abortable();
+            state.remote_branches_started(generation, handle);
             tasks.push(task);
         }
         Task::batch(tasks)

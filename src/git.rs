@@ -1,5 +1,6 @@
 use std::{
-    collections::HashSet,
+    cmp::Reverse,
+    collections::HashMap,
     env,
     io::{self, BufRead, Write},
     path::Path,
@@ -40,43 +41,85 @@ pub async fn available(runner: &CommandRunner) -> bool {
         .is_ok_and(|output| output.status.success())
 }
 
-pub async fn local_branches(runner: &CommandRunner, path: &Path, repository: &str) -> Vec<String> {
-    if check_worktree(runner, path, repository).await.is_err() {
-        return Vec::new();
+#[derive(Clone)]
+pub struct Branch {
+    name: String,
+    committed_at: Option<i64>,
+}
+
+#[derive(Clone)]
+pub struct RemoteBranches {
+    pub branches: Vec<Branch>,
+    pub default_branch: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum RemoteBranchesError {
+    Network,
+    Unavailable,
+}
+
+pub fn branch_names(local: &[Branch], remote: &[Branch]) -> Vec<String> {
+    let mut branches = HashMap::with_capacity(local.len() + remote.len());
+    for branch in local.iter().chain(remote) {
+        branches
+            .entry(branch.name.as_str())
+            .and_modify(|date| *date = branch.committed_at.max(*date))
+            .or_insert(branch.committed_at);
     }
-    let Ok(output) = run(
-        runner,
-        command().current_dir(path).args([
-            "for-each-ref",
-            "--sort=refname",
-            "--sort=-committerdate",
-            "--format=%(refname)%09%(symref)",
-            "refs/heads",
-            "refs/remotes/origin",
-        ]),
-        Error::Inspect,
-    )
-    .await
-    else {
-        return Vec::new();
-    };
-    let mut seen = HashSet::new();
-    output
-        .split(|&byte| byte == b'\n')
-        .filter_map(|line| std::str::from_utf8(line).ok()?.strip_suffix('\t'))
-        .filter_map(|reference| {
-            reference
-                .strip_prefix("refs/heads/")
-                .or_else(|| reference.strip_prefix("refs/remotes/origin/"))
-        })
-        .filter(|name| valid_branch(name) && seen.insert(*name))
-        .map(str::to_owned)
+    let mut branches: Vec<_> = branches.into_iter().collect();
+    branches.sort_unstable_by_key(|&(name, date)| (Reverse(date), name));
+    branches
+        .into_iter()
+        .map(|(name, _)| name.to_owned())
         .collect()
 }
 
-pub async fn remote_head(runner: &CommandRunner, repository: &str, token: &str) -> Option<String> {
-    // The draft path may point at an unrelated repository with its own Git configuration.
-    let directory = tempfile::tempdir().ok()?;
+pub async fn local_branches(runner: &CommandRunner, path: &Path, repository: &str) -> Vec<Branch> {
+    if check_worktree(runner, path, repository).await.is_err() {
+        return Vec::new();
+    }
+    read_branches(runner, path).await.unwrap_or_default()
+}
+
+async fn read_branches(runner: &CommandRunner, path: &Path) -> Result<Vec<Branch>, Error> {
+    let output = run(
+        runner,
+        command()
+            .current_dir(path)
+            .env("GIT_NO_LAZY_FETCH", "1")
+            .args([
+                "for-each-ref",
+                "--format=%(refname:strip=2)%09%(committerdate:unix)%09%(symref)",
+                "refs/heads",
+            ]),
+        Error::Inspect,
+    )
+    .await?;
+    let branches = output
+        .split(|&byte| byte == b'\n')
+        .filter_map(|line| {
+            let (name, date) = std::str::from_utf8(line)
+                .ok()?
+                .strip_suffix('\t')?
+                .split_once('\t')?;
+            valid_branch(name).then(|| Branch {
+                name: name.to_owned(),
+                committed_at: date.parse().ok(),
+            })
+        })
+        .collect();
+    Ok(branches)
+}
+
+pub async fn remote_branches(
+    runner: &CommandRunner,
+    repository: &str,
+    token: &str,
+) -> Result<RemoteBranches, RemoteBranchesError> {
+    use RemoteBranchesError::{Network, Unavailable};
+
+    let directory = tempfile::tempdir().map_err(|_| Unavailable)?;
     let resolved = run(
         runner,
         command()
@@ -85,34 +128,103 @@ pub async fn remote_head(runner: &CommandRunner, repository: &str, token: &str) 
         Error::Fetch,
     )
     .await
-    .ok()?;
-    let remote = matching_remote(&resolved, repository).ok()?;
-    let mut git = network_command(directory.path(), repository, token, remote).ok()?;
-    git.args([
-        "-c",
-        "http.lowSpeedLimit=1",
-        "-c",
-        "http.lowSpeedTime=10",
-        "ls-remote",
-        "--symref",
-        "--",
-        repository,
-        "HEAD",
-    ]);
-    let output = tokio::time::timeout(Duration::from_secs(15), run(runner, &mut git, Error::Fetch))
+    .map_err(|_| Unavailable)?;
+    let remote = matching_remote(&resolved, repository).map_err(|_| Unavailable)?;
+    let mut git =
+        network_command(directory.path(), repository, token, remote).map_err(|_| Unavailable)?;
+    // A treeless shallow clone keeps branch-tip commit dates out of the working copy.
+    git.env("LC_ALL", "C")
+        .args([
+            "-c",
+            "http.lowSpeedLimit=1",
+            "-c",
+            "http.lowSpeedTime=10",
+            "clone",
+            "--bare",
+            "--depth=1",
+            "--no-single-branch",
+            "--filter=tree:0",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "--template=",
+            "--",
+            repository,
+        ])
+        .arg(directory.path());
+    let output = tokio::time::timeout(Duration::from_secs(15), runner.output(&mut git))
         .await
-        .ok()?
-        .ok()?;
-    output
-        .split(|&byte| byte == b'\n')
-        .find_map(|line| {
-            std::str::from_utf8(line)
-                .ok()?
-                .strip_prefix("ref: refs/heads/")?
-                .strip_suffix("\tHEAD")
-                .filter(|branch| valid_branch(branch))
-        })
-        .map(str::to_owned)
+        .map_err(|_| Network)?
+        .map_err(|_| Unavailable)?;
+    if !output.status.success() {
+        return Err(if remote_transport_failed(&output.stderr) {
+            Network
+        } else {
+            Unavailable
+        });
+    }
+
+    let branches = read_branches(runner, directory.path())
+        .await
+        .map_err(|_| Unavailable)?;
+    let default_branch = current_branch(runner, directory.path())
+        .await
+        .ok()
+        .and_then(|head| String::from_utf8(head).ok())
+        .filter(|head| branches.iter().any(|branch| &branch.name == head));
+    Ok(RemoteBranches {
+        branches,
+        default_branch,
+    })
+}
+
+fn remote_transport_failed(stderr: &[u8]) -> bool {
+    String::from_utf8_lossy(stderr).lines().any(|line| {
+        // Git reports libcurl codes for failed RPCs and libcurl messages for ref discovery.
+        if let Some(rpc) = line.strip_prefix("error: RPC failed; curl ") {
+            let code = rpc
+                .split_whitespace()
+                .next()
+                .and_then(|code| code.parse::<u8>().ok());
+            return matches!(
+                code,
+                Some(5 | 6 | 7 | 16 | 18 | 28 | 35 | 52 | 55 | 56 | 60 | 92 | 95 | 96 | 97)
+            );
+        }
+        let Some((_, detail)) = line
+            .strip_prefix("fatal: unable to access '")
+            .and_then(|line| line.split_once("': "))
+        else {
+            return false;
+        };
+        let detail = detail.to_ascii_lowercase();
+        [
+            "could not resolve",
+            "couldn't resolve",
+            "failed to connect",
+            "couldn't connect",
+            "timed out",
+            "timeout",
+            "operation too slow",
+            "connection refused",
+            "connection reset",
+            "network is unreachable",
+            "proxy connect",
+            "connect tunnel",
+            "send failure",
+            "recv failure",
+            "failure when sending data",
+            "failure when receiving data",
+            "empty reply",
+            "server returned nothing",
+            "ssl",
+            "tls",
+            "certificate verification",
+            "http/2",
+            "http/3",
+        ]
+        .iter()
+        .any(|message| detail.contains(message))
+    })
 }
 
 #[derive(Clone, Default)]
@@ -249,7 +361,6 @@ async fn synchronize(
     let remote = check_worktree(runner, &config.path, &config.repository).await?;
     require_clean(runner, &config.path).await?;
 
-    // Refresh the refs used by branch suggestions without changing local branches.
     let mut git = network_command(&config.path, &config.repository, &config.token, &remote)?;
     run(
         runner,

@@ -18,6 +18,7 @@ use crate::{
         CONFIG_DIRECTORY, Config, DEFAULT_FLAKE_DIRECTORY, DEFAULT_REPO_PATH, SaveError, UI_SCALES,
         display_repo_path, github_repository,
     },
+    git::{self, Branch, RemoteBranches, RemoteBranchesError},
     i18n::{I18n, LanguagePreference},
     ui::style::{buttons, colors, inputs, pick_lists, spacing},
 };
@@ -48,7 +49,7 @@ pub struct BranchLookup {
     pub repository: String,
     pub path: Option<PathBuf>,
     pub token: String,
-    pub check_head: bool,
+    pub check_remote: bool,
 }
 
 enum Lookup<T> {
@@ -74,8 +75,9 @@ pub struct State {
     saving: bool,
     git_available: bool,
     repository: Option<String>,
-    branches: Lookup<Vec<String>>,
-    head: Lookup<Option<String>>,
+    local: Lookup<Vec<Branch>>,
+    remote: Lookup<Result<RemoteBranches, RemoteBranchesError>>,
+    branch_names: Vec<String>,
     auto_branch: bool,
     save_after_head: bool,
 }
@@ -91,8 +93,9 @@ impl State {
             error: None,
             saving: false,
             git_available,
-            branches: Lookup::Pending,
-            head: Lookup::Pending,
+            local: Lookup::Pending,
+            remote: Lookup::Pending,
+            branch_names: Vec::new(),
             auto_branch: false,
             save_after_head: false,
         }
@@ -123,60 +126,80 @@ impl State {
                 .is_some_and(|repository| !same_repository(repository, &self.original.repository))
     }
 
-    pub fn branch_lookup(&self, allow_head: bool) -> Option<BranchLookup> {
+    pub fn branch_lookup(&self, allow_remote: bool) -> Option<BranchLookup> {
         let repository = self.repository.as_ref()?;
-        let local_pending = matches!(self.branches, Lookup::Pending);
-        let check_head = allow_head && self.needs_head() && matches!(self.head, Lookup::Pending);
-        if !self.git_available || (!local_pending && !check_head) {
+        let local_pending = matches!(self.local, Lookup::Pending);
+        let check_remote = allow_remote && matches!(self.remote, Lookup::Pending);
+        if !self.git_available || (!local_pending && !check_remote) {
             return None;
         }
         Some(BranchLookup {
             repository: repository.clone(),
             path: local_pending.then(|| self.draft.path.clone()),
             token: self.draft.token.trim().to_owned(),
-            check_head,
+            check_remote,
         })
     }
 
-    pub fn branches_started(&mut self, id: u64, handle: Handle) {
-        self.branches = Lookup::Running {
+    pub fn local_branches_started(&mut self, id: u64, handle: Handle) {
+        self.local = Lookup::Running {
             id,
             _handle: handle.abort_on_drop(),
         };
     }
 
-    pub fn head_started(&mut self, id: u64, handle: Handle) {
-        self.head = Lookup::Running {
+    pub fn remote_branches_started(&mut self, id: u64, handle: Handle) {
+        self.remote = Lookup::Running {
             id,
             _handle: handle.abort_on_drop(),
         };
     }
 
-    pub fn branches_finished(&mut self, id: u64, branches: Vec<String>) {
-        self.branches.finish(id, branches);
+    pub fn local_branches_finished(&mut self, id: u64, branches: Vec<Branch>) {
+        if self.local.finish(id, branches) {
+            self.update_branch_names();
+        }
     }
 
     pub fn refresh_local_branches(&mut self) {
-        self.branches = Lookup::Pending;
+        if !matches!(self.local, Lookup::Pending) {
+            self.local = Lookup::Pending;
+            self.update_branch_names();
+        }
     }
 
-    pub fn head_finished(
+    pub fn remote_branches_finished(
         &mut self,
         id: u64,
-        branch: Option<String>,
+        result: Result<RemoteBranches, RemoteBranchesError>,
         operation_idle: bool,
     ) -> Option<Config> {
-        if !self.head.finish(id, branch) {
+        if !self.remote.finish(id, result) {
             return None;
         }
-        if self.draft.branch.trim().is_empty()
-            && let Lookup::Finished(Some(branch)) = &self.head
+        self.update_branch_names();
+        if self.needs_head()
+            && self.draft.branch.trim().is_empty()
+            && let Lookup::Finished(Ok(remote)) = &self.remote
+            && let Some(branch) = &remote.default_branch
         {
             self.draft.branch.clone_from(branch);
             self.auto_branch = true;
         }
         (std::mem::take(&mut self.save_after_head) && self.can_save(operation_idle))
             .then(|| self.start_save())
+    }
+
+    fn update_branch_names(&mut self) {
+        let local = match &self.local {
+            Lookup::Finished(branches) => branches.as_slice(),
+            _ => &[],
+        };
+        let remote = match &self.remote {
+            Lookup::Finished(Ok(remote)) => remote.branches.as_slice(),
+            _ => &[],
+        };
+        self.branch_names = git::branch_names(local, remote);
     }
 
     fn start_save(&mut self) -> Config {
@@ -195,7 +218,7 @@ impl State {
                     return Action::None;
                 }
                 self.error = None;
-                if self.needs_head() && !matches!(self.head, Lookup::Finished(_)) {
+                if self.needs_head() && !matches!(self.remote, Lookup::Finished(_)) {
                     self.save_after_head = true;
                     return Action::LookupBranches;
                 }
@@ -215,8 +238,9 @@ impl State {
                     self.repository.as_deref().unwrap_or_default(),
                     repository.as_deref().unwrap_or_default(),
                 ) {
-                    self.refresh_local_branches();
-                    self.head = Lookup::Pending;
+                    self.local = Lookup::Pending;
+                    self.remote = Lookup::Pending;
+                    self.branch_names.clear();
                     if std::mem::take(&mut self.auto_branch) {
                         self.draft.branch.clear();
                     }
@@ -226,9 +250,10 @@ impl State {
             }
             Message::TokenChanged(value) => {
                 if value.trim() != self.draft.token.trim()
-                    && !matches!(self.head, Lookup::Finished(Some(_)))
+                    && !matches!(self.remote, Lookup::Pending)
                 {
-                    self.head = Lookup::Pending;
+                    self.remote = Lookup::Pending;
+                    self.update_branch_names();
                 }
                 self.draft.token = value;
             }
@@ -270,16 +295,17 @@ impl State {
         .on_submit_maybe(submit.clone());
         let branch_editing = editing
             && self.repository.is_some()
-            && (!self.needs_head() || matches!(self.head, Lookup::Finished(_)));
+            && (!self.needs_head() || matches!(self.remote, Lookup::Finished(_)));
         let branch = text_input(
             &i18n.text("settings-branch-placeholder"),
             &self.draft.branch,
         )
         .on_input_maybe(branch_editing.then_some(Message::BranchChanged))
         .on_submit_maybe(submit.clone());
-        let branches = match &self.branches {
-            Lookup::Finished(branches) if branch_editing => branches.as_slice(),
-            _ => &[],
+        let branches = if branch_editing {
+            self.branch_names.as_slice()
+        } else {
+            &[]
         };
         let mut branch = field(
             i18n.text("settings-branch"),
@@ -287,12 +313,23 @@ impl State {
                 .branches(&self.draft.branch, branches)
                 .into_element(),
         );
-        let branch_status = match (&self.head, &self.branches) {
-            (Lookup::Running { .. }, _) => Some(("settings-branch-loading-head", colors::INFO)),
-            (Lookup::Finished(None), _) => {
+        let branch_status = match &self.remote {
+            Lookup::Running { .. } => Some(("settings-branch-loading-remote", colors::INFO)),
+            Lookup::Finished(Err(RemoteBranchesError::Network)) => {
+                Some(("settings-branch-network-warning", colors::WARNING))
+            }
+            Lookup::Finished(result)
+                if self.needs_head()
+                    && self.draft.branch.trim().is_empty()
+                    && result
+                        .as_ref()
+                        .map_or(true, |remote| remote.default_branch.is_none()) =>
+            {
                 Some(("settings-branch-head-unavailable", colors::TEXT_MUTED))
             }
-            (_, Lookup::Running { .. }) => Some(("settings-branch-loading-local", colors::INFO)),
+            _ if matches!(self.local, Lookup::Running { .. }) => {
+                Some(("settings-branch-loading-local", colors::INFO))
+            }
             _ => None,
         };
         if let Some((key, color)) = branch_status {
