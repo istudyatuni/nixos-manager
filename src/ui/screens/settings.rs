@@ -1,8 +1,12 @@
-use std::{fmt, path::Path};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+};
 
 use fluent_bundle::FluentArgs;
 use iced::{
     Center, Element, Fill,
+    task::Handle,
     widget::{
         Column, Row, TextInput, button, column, container, pick_list, row, scrollable, space, text,
         text_input,
@@ -12,11 +16,14 @@ use iced::{
 use crate::{
     config::{
         CONFIG_DIRECTORY, Config, DEFAULT_FLAKE_DIRECTORY, DEFAULT_REPO_PATH, SaveError, UI_SCALES,
-        display_repo_path,
+        display_repo_path, github_repository,
     },
     i18n::{I18n, LanguagePreference},
     ui::style::{buttons, colors, inputs, pick_lists, spacing},
 };
+
+mod repository_input;
+use repository_input::RepositoryInput;
 
 #[derive(Clone)]
 pub enum Message {
@@ -27,7 +34,37 @@ pub enum Message {
     PathChanged(String),
     BranchChanged(String),
     FlakeDirectoryChanged(String),
+    InputFocused,
     Save,
+}
+
+pub enum Action {
+    None,
+    LookupBranches,
+    Save(Config),
+}
+
+pub struct BranchLookup {
+    pub repository: String,
+    pub path: Option<PathBuf>,
+    pub token: String,
+    pub check_head: bool,
+}
+
+enum Lookup<T> {
+    Pending,
+    Running { id: u64, _handle: Handle },
+    Finished(T),
+}
+
+impl<T> Lookup<T> {
+    fn finish(&mut self, id: u64, result: T) -> bool {
+        if !matches!(self, Self::Running { id: current, .. } if *current == id) {
+            return false;
+        }
+        *self = Self::Finished(result);
+        true
+    }
 }
 
 pub struct State {
@@ -35,17 +72,29 @@ pub struct State {
     draft: Config,
     error: Option<SaveError>,
     saving: bool,
+    git_available: bool,
+    repository: Option<String>,
+    branches: Lookup<Vec<String>>,
+    head: Lookup<Option<String>>,
+    auto_branch: bool,
+    save_after_head: bool,
 }
 
 impl State {
-    pub fn new(config: Option<&Config>, home: Option<&Path>) -> Self {
+    pub fn new(config: Option<&Config>, home: Option<&Path>, git_available: bool) -> Self {
         let mut draft = config.cloned().unwrap_or_default();
         draft.path = display_repo_path(&draft.path, home).into_owned();
         Self {
             original: Box::new(draft.clone()),
+            repository: github_repository(draft.repository.trim()),
             draft,
             error: None,
             saving: false,
+            git_available,
+            branches: Lookup::Pending,
+            head: Lookup::Pending,
+            auto_branch: false,
+            save_after_head: false,
         }
     }
 
@@ -66,52 +115,189 @@ impl State {
         operation_idle && !self.saving && self.draft != *self.original
     }
 
-    pub fn update(&mut self, message: Message, operation_idle: bool) -> Option<Config> {
-        if self.saving || (matches!(message, Message::Save) && !self.can_save(operation_idle)) {
+    fn needs_head(&self) -> bool {
+        self.git_available
+            && self
+                .repository
+                .as_deref()
+                .is_some_and(|repository| !same_repository(repository, &self.original.repository))
+    }
+
+    pub fn branch_lookup(&self, allow_head: bool) -> Option<BranchLookup> {
+        let repository = self.repository.as_ref()?;
+        let local_pending = matches!(self.branches, Lookup::Pending);
+        let check_head = allow_head && self.needs_head() && matches!(self.head, Lookup::Pending);
+        if !self.git_available || (!local_pending && !check_head) {
             return None;
+        }
+        Some(BranchLookup {
+            repository: repository.clone(),
+            path: local_pending.then(|| self.draft.path.clone()),
+            token: self.draft.token.trim().to_owned(),
+            check_head,
+        })
+    }
+
+    pub fn branches_started(&mut self, id: u64, handle: Handle) {
+        self.branches = Lookup::Running {
+            id,
+            _handle: handle.abort_on_drop(),
+        };
+    }
+
+    pub fn head_started(&mut self, id: u64, handle: Handle) {
+        self.head = Lookup::Running {
+            id,
+            _handle: handle.abort_on_drop(),
+        };
+    }
+
+    pub fn branches_finished(&mut self, id: u64, branches: Vec<String>) {
+        self.branches.finish(id, branches);
+    }
+
+    pub fn refresh_local_branches(&mut self) {
+        self.branches = Lookup::Pending;
+    }
+
+    pub fn head_finished(
+        &mut self,
+        id: u64,
+        branch: Option<String>,
+        operation_idle: bool,
+    ) -> Option<Config> {
+        if !self.head.finish(id, branch) {
+            return None;
+        }
+        if self.draft.branch.trim().is_empty()
+            && let Lookup::Finished(Some(branch)) = &self.head
+        {
+            self.draft.branch.clone_from(branch);
+            self.auto_branch = true;
+        }
+        (std::mem::take(&mut self.save_after_head) && self.can_save(operation_idle))
+            .then(|| self.start_save())
+    }
+
+    fn start_save(&mut self) -> Config {
+        self.saving = true;
+        self.draft.clone()
+    }
+
+    pub fn update(&mut self, message: Message, operation_idle: bool) -> Action {
+        if self.saving {
+            return Action::None;
+        }
+        match message {
+            Message::InputFocused => return Action::LookupBranches,
+            Message::Save => {
+                if !self.can_save(operation_idle) || self.save_after_head {
+                    return Action::None;
+                }
+                self.error = None;
+                if self.needs_head() && !matches!(self.head, Lookup::Finished(_)) {
+                    self.save_after_head = true;
+                    return Action::LookupBranches;
+                }
+                return Action::Save(self.start_save());
+            }
+            _ => {}
         }
 
         self.error = None;
+        self.save_after_head = false;
         match message {
             Message::LanguageChanged(value) => self.draft.language = value,
             Message::ScaleChanged(value) => self.draft.ui_scale = value,
-            Message::RepositoryChanged(value) => self.draft.repository = value,
-            Message::TokenChanged(value) => self.draft.token = value,
-            Message::PathChanged(value) => self.draft.path = value.into(),
-            Message::BranchChanged(value) => self.draft.branch = value,
-            Message::FlakeDirectoryChanged(value) => self.draft.flake_directory = value.into(),
-            Message::Save => {
-                self.saving = true;
-                return Some(self.draft.clone());
+            Message::RepositoryChanged(value) => {
+                let repository = github_repository(value.trim());
+                if !same_repository(
+                    self.repository.as_deref().unwrap_or_default(),
+                    repository.as_deref().unwrap_or_default(),
+                ) {
+                    self.refresh_local_branches();
+                    self.head = Lookup::Pending;
+                    if std::mem::take(&mut self.auto_branch) {
+                        self.draft.branch.clear();
+                    }
+                }
+                self.repository = repository;
+                self.draft.repository = value;
             }
+            Message::TokenChanged(value) => {
+                if value.trim() != self.draft.token.trim()
+                    && !matches!(self.head, Lookup::Finished(Some(_)))
+                {
+                    self.head = Lookup::Pending;
+                }
+                self.draft.token = value;
+            }
+            Message::PathChanged(value) => {
+                self.draft.path = value.into();
+                self.refresh_local_branches();
+            }
+            Message::BranchChanged(value) => {
+                self.draft.branch = value;
+                self.auto_branch = false;
+            }
+            Message::FlakeDirectoryChanged(value) => self.draft.flake_directory = value.into(),
+            Message::InputFocused | Message::Save => unreachable!(),
         }
-        None
+        Action::None
     }
 
     pub fn view<'a>(&'a self, i18n: &'a I18n, operation_idle: bool) -> Element<'a, Message> {
         let editing = !self.saving;
-        let submit = self.can_save(operation_idle).then_some(Message::Save);
+        let submit =
+            (self.can_save(operation_idle) && !self.save_after_head).then_some(Message::Save);
         let repository = text_input(
             &i18n.text("settings-repository-placeholder"),
             &self.draft.repository,
         )
-        .on_input_maybe(editing.then_some(Message::RepositoryChanged));
+        .on_input_maybe(editing.then_some(Message::RepositoryChanged))
+        .on_submit_maybe(submit.clone());
         let token = text_input("", &self.draft.token)
             .secure(true)
-            .on_input_maybe(editing.then_some(Message::TokenChanged));
+            .on_input_maybe(editing.then_some(Message::TokenChanged))
+            .on_submit_maybe(submit.clone());
         let mut path_args = FluentArgs::new();
         path_args.set("path", DEFAULT_REPO_PATH);
         let path = text_input(
             &i18n.with_args("settings-path-placeholder", &path_args),
             &self.draft.path.to_string_lossy(),
         )
-        .on_input_maybe(editing.then_some(Message::PathChanged));
+        .on_input_maybe(editing.then_some(Message::PathChanged))
+        .on_submit_maybe(submit.clone());
+        let branch_editing = editing
+            && self.repository.is_some()
+            && (!self.needs_head() || matches!(self.head, Lookup::Finished(_)));
         let branch = text_input(
             &i18n.text("settings-branch-placeholder"),
             &self.draft.branch,
         )
-        .on_input_maybe(editing.then_some(Message::BranchChanged))
+        .on_input_maybe(branch_editing.then_some(Message::BranchChanged))
         .on_submit_maybe(submit.clone());
+        let branches = match &self.branches {
+            Lookup::Finished(branches) if branch_editing => branches.as_slice(),
+            _ => &[],
+        };
+        let mut branch = field(
+            i18n.text("settings-branch"),
+            RepositoryInput::new(styled_input(branch), editing)
+                .branches(&self.draft.branch, branches)
+                .into_element(),
+        );
+        let branch_status = match (&self.head, &self.branches) {
+            (Lookup::Running { .. }, _) => Some(("settings-branch-loading-head", colors::INFO)),
+            (Lookup::Finished(None), _) => {
+                Some(("settings-branch-head-unavailable", colors::TEXT_MUTED))
+            }
+            (_, Lookup::Running { .. }) => Some(("settings-branch-loading-local", colors::INFO)),
+            _ => None,
+        };
+        if let Some((key, color)) = branch_status {
+            branch = branch.push(text(i18n.text(key)).size(13).color(color));
+        }
         let flake_directory = text_input(
             DEFAULT_FLAKE_DIRECTORY,
             &self.draft.flake_directory.to_string_lossy(),
@@ -127,15 +313,26 @@ impl State {
         .spacing(spacing::LG);
         let repository = column![
             text(i18n.text("settings-repository-section")).size(18),
-            field(i18n.text("settings-repository"), repository),
-            field(i18n.text("settings-token"), token),
-            field(i18n.text("settings-path"), path).push(
+            field(i18n.text("settings-repository"), styled_input(repository)),
+            field(
+                i18n.text("settings-token"),
+                RepositoryInput::new(styled_input(token), editing).into_element()
+            ),
+            field(
+                i18n.text("settings-path"),
+                RepositoryInput::new(styled_input(path), editing).into_element()
+            )
+            .push(
                 text(i18n.text("settings-path-hint"))
                     .size(13)
                     .color(colors::TEXT_MUTED)
             ),
-            field(i18n.text("settings-branch"), branch),
-            field(i18n.text("settings-flake-directory"), flake_directory).push(
+            branch,
+            field(
+                i18n.text("settings-flake-directory"),
+                RepositoryInput::new(styled_input(flake_directory), editing).into_element(),
+            )
+            .push(
                 text(i18n.text("settings-flake-directory-hint"))
                     .size(13)
                     .color(colors::TEXT_MUTED)
@@ -267,12 +464,18 @@ fn select_field<'a, T: Clone + PartialEq + 'a>(
         .spacing(spacing::LG)
 }
 
-fn field(label: String, input: TextInput<'_, Message>) -> Column<'_, Message> {
-    column![
-        text(label).size(14),
-        input.size(15).padding([8, 10]).style(inputs::input),
-    ]
-    .spacing(spacing::SM)
+fn same_repository(first: &str, second: &str) -> bool {
+    let first = first.strip_suffix(".git").unwrap_or(first);
+    let second = second.strip_suffix(".git").unwrap_or(second);
+    first.eq_ignore_ascii_case(second)
+}
+
+fn styled_input(input: TextInput<'_, Message>) -> TextInput<'_, Message> {
+    input.size(15).padding([8, 10]).style(inputs::input)
+}
+
+fn field<'a>(label: String, input: impl Into<Element<'a, Message>>) -> Column<'a, Message> {
+    column![text(label).size(14), input.into()].spacing(spacing::SM)
 }
 
 fn error_text(i18n: &I18n, error: SaveError) -> String {

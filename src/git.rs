@@ -1,7 +1,9 @@
 use std::{
+    collections::HashSet,
     env,
     io::{self, BufRead, Write},
     path::Path,
+    time::Duration,
 };
 
 use tempfile::{Builder, TempDir};
@@ -9,7 +11,7 @@ use tokio::{fs, process::Command};
 
 use crate::{
     command_runner::CommandRunner,
-    config::{Config, github_url},
+    config::{Config, github_url, valid_branch},
 };
 
 pub const CREDENTIAL_HELPER_FLAG: &str = "--git-credential-helper";
@@ -36,6 +38,81 @@ pub async fn available(runner: &CommandRunner) -> bool {
         .output(command().arg("--version"))
         .await
         .is_ok_and(|output| output.status.success())
+}
+
+pub async fn local_branches(runner: &CommandRunner, path: &Path, repository: &str) -> Vec<String> {
+    if check_worktree(runner, path, repository).await.is_err() {
+        return Vec::new();
+    }
+    let Ok(output) = run(
+        runner,
+        command().current_dir(path).args([
+            "for-each-ref",
+            "--sort=refname",
+            "--sort=-committerdate",
+            "--format=%(refname)%09%(symref)",
+            "refs/heads",
+            "refs/remotes/origin",
+        ]),
+        Error::Inspect,
+    )
+    .await
+    else {
+        return Vec::new();
+    };
+    let mut seen = HashSet::new();
+    output
+        .split(|&byte| byte == b'\n')
+        .filter_map(|line| std::str::from_utf8(line).ok()?.strip_suffix('\t'))
+        .filter_map(|reference| {
+            reference
+                .strip_prefix("refs/heads/")
+                .or_else(|| reference.strip_prefix("refs/remotes/origin/"))
+        })
+        .filter(|name| valid_branch(name) && seen.insert(*name))
+        .map(str::to_owned)
+        .collect()
+}
+
+pub async fn remote_head(runner: &CommandRunner, repository: &str, token: &str) -> Option<String> {
+    // The draft path may point at an unrelated repository with its own Git configuration.
+    let directory = tempfile::tempdir().ok()?;
+    let resolved = run(
+        runner,
+        command()
+            .current_dir(directory.path())
+            .args(["ls-remote", "--get-url", "--", repository]),
+        Error::Fetch,
+    )
+    .await
+    .ok()?;
+    let remote = matching_remote(&resolved, repository).ok()?;
+    let mut git = network_command(directory.path(), repository, token, remote).ok()?;
+    git.args([
+        "-c",
+        "http.lowSpeedLimit=1",
+        "-c",
+        "http.lowSpeedTime=10",
+        "ls-remote",
+        "--symref",
+        "--",
+        repository,
+        "HEAD",
+    ]);
+    let output = tokio::time::timeout(Duration::from_secs(15), run(runner, &mut git, Error::Fetch))
+        .await
+        .ok()?
+        .ok()?;
+    output
+        .split(|&byte| byte == b'\n')
+        .find_map(|line| {
+            std::str::from_utf8(line)
+                .ok()?
+                .strip_prefix("ref: refs/heads/")?
+                .strip_suffix("\tHEAD")
+                .filter(|branch| valid_branch(branch))
+        })
+        .map(str::to_owned)
 }
 
 #[derive(Clone, Default)]
@@ -131,12 +208,12 @@ async fn clone_in(
     )
     .await?;
     let remote = matching_remote(&resolved, &config.repository)?;
-    let mut git = network_command(staging.path(), config, remote)?;
+    let mut git = network_command(staging.path(), &config.repository, &config.token, remote)?;
     git.args([
         "clone",
         "--progress",
         "--no-checkout",
-        "--single-branch",
+        "--no-single-branch",
         "--no-tags",
         "--origin",
         "origin",
@@ -172,8 +249,8 @@ async fn synchronize(
     let remote = check_worktree(runner, &config.path, &config.repository).await?;
     require_clean(runner, &config.path).await?;
 
-    let refspec = format!("refs/heads/{}:{tracking_ref}", config.branch);
-    let mut git = network_command(&config.path, config, &remote)?;
+    // Refresh the refs used by branch suggestions without changing local branches.
+    let mut git = network_command(&config.path, &config.repository, &config.token, &remote)?;
     run(
         runner,
         git.args([
@@ -181,12 +258,13 @@ async fn synchronize(
             "--progress",
             "--force",
             "--no-tags",
-            "--no-prune",
+            "--prune",
+            "--no-prune-tags",
             "--no-recurse-submodules",
             "--no-auto-maintenance",
             "--refmap=",
             "origin",
-            &refspec,
+            "refs/heads/*:refs/remotes/origin/*",
         ]),
         Error::Fetch,
     )
@@ -402,7 +480,12 @@ fn command() -> Command {
     git
 }
 
-fn network_command(path: &Path, config: &Config, remote: &str) -> Result<Command, Error> {
+fn network_command(
+    path: &Path,
+    repository: &str,
+    token: &str,
+    remote: &str,
+) -> Result<Command, Error> {
     let executable = env::current_exe().map_err(|_| Error::Unavailable)?;
     let mut git = command();
     git.current_dir(path)
@@ -413,8 +496,8 @@ fn network_command(path: &Path, config: &Config, remote: &str) -> Result<Command
         .env_remove("GIT_CURL_VERBOSE")
         .env_remove("GIT_SSL_NO_VERIFY")
         .env(HELPER_EXECUTABLE, executable)
-        .env(HELPER_REPOSITORY, &config.repository)
-        .env(HELPER_TOKEN, &config.token)
+        .env(HELPER_REPOSITORY, repository)
+        .env(HELPER_TOKEN, token)
         .args([
             "-c",
             "core.askPass=",

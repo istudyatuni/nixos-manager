@@ -1,10 +1,10 @@
 use std::{env, path::PathBuf, sync::Arc, time::Duration};
 
 use iced::{
-    Center, Element, Fill, Subscription, Task, Theme, clipboard,
+    Center, Element, Event, Fill, Subscription, Task, Theme, clipboard, event,
     futures::{SinkExt, stream::unfold},
-    stream,
-    widget::{button, column, container, row, space, text},
+    keyboard, stream,
+    widget::{button, column, container, operation, row, space, text},
     window,
 };
 use tokio::sync::mpsc;
@@ -42,6 +42,7 @@ pub struct App {
     commands: CommandRunner,
     checking_repository: bool,
     repository_generation: u64,
+    settings_lookup_generation: u64,
 }
 
 #[derive(Clone)]
@@ -51,6 +52,9 @@ pub enum Message {
     CloseSettings,
     Overview(overview::Message),
     Settings(settings::Message),
+    FocusSettingsInput(bool),
+    SettingsBranches(u64, Vec<String>),
+    SettingsHead(u64, Option<String>),
     Loaded(Result<Option<Config>, LoadError>, bool, rebuild::Tools),
     Saved(Result<Config, SaveError>),
     Downloaded(Result<git::WorkingCopy, git::Error>),
@@ -83,6 +87,7 @@ impl App {
             commands: CommandRunner::new(journal),
             checking_repository: false,
             repository_generation: 0,
+            settings_lookup_generation: 0,
         };
         let runner = app.commands.clone();
         let load = Task::perform(
@@ -147,7 +152,25 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        window::close_requests().map(Message::WindowCloseRequested)
+        let close = window::close_requests().map(Message::WindowCloseRequested);
+        if matches!(&self.screen, Screen::Settings(state) if !state.saving()) {
+            Subscription::batch([
+                close,
+                event::listen_with(|event, status, _| match (event, status) {
+                    (
+                        Event::Keyboard(keyboard::Event::KeyPressed {
+                            key: keyboard::Key::Named(keyboard::key::Named::Tab),
+                            modifiers,
+                            ..
+                        }),
+                        event::Status::Ignored,
+                    ) => Some(Message::FocusSettingsInput(modifiers.shift())),
+                    _ => None,
+                }),
+            ])
+        } else {
+            close
+        }
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -160,10 +183,12 @@ impl App {
                 self.interrupt_rebuild();
             }
             Message::OpenSettings if !self.loading && matches!(self.screen, Screen::Overview) => {
-                self.screen = Screen::Settings(settings::State::new(
+                self.screen = Screen::Settings(Box::new(settings::State::new(
                     self.config.as_ref(),
                     self.home.as_deref(),
-                ));
+                    self.git_available,
+                )));
+                return self.lookup_settings_branches(false);
             }
             Message::CloseSettings => {
                 if matches!(&self.screen, Screen::Settings(state) if !state.saving()) {
@@ -216,6 +241,10 @@ impl App {
                     });
                 self.download = overview::DownloadStatus::Finished(result);
                 self.overview.set_download_error(&self.i18n, &self.download);
+                if let Screen::Settings(state) = &mut self.screen {
+                    state.refresh_local_branches();
+                    return self.lookup_settings_branches(false);
+                }
                 return self.inspect_repository();
             }
             Message::Overview(overview::Message::Rebuild) => return self.start_rebuild(),
@@ -290,24 +319,36 @@ impl App {
             }
             Message::Settings(message) => {
                 let can_save = !self.is_busy();
+                if let Screen::Settings(state) = &mut self.screen {
+                    match state.update(message, can_save) {
+                        settings::Action::None => {}
+                        settings::Action::LookupBranches => {
+                            return self.lookup_settings_branches(true);
+                        }
+                        settings::Action::Save(draft) => return self.save_settings(draft),
+                    }
+                }
+            }
+            Message::FocusSettingsInput(reverse) => {
+                if matches!(&self.screen, Screen::Settings(state) if !state.saving()) {
+                    return if reverse {
+                        operation::focus_previous()
+                    } else {
+                        operation::focus_next()
+                    };
+                }
+            }
+            Message::SettingsBranches(generation, branches) => {
+                if let Screen::Settings(state) = &mut self.screen {
+                    state.branches_finished(generation, branches);
+                }
+            }
+            Message::SettingsHead(generation, branch) => {
+                let can_save = !self.is_busy();
                 if let Screen::Settings(state) = &mut self.screen
-                    && let Some(draft) = state.update(message, can_save)
+                    && let Some(draft) = state.head_finished(generation, branch, can_save)
                 {
-                    let repository_required = self
-                        .config
-                        .as_ref()
-                        .and_then(Config::repository_path)
-                        .is_some();
-                    return Task::perform(
-                        async move {
-                            tokio::task::spawn_blocking(move || {
-                                config::save(draft, repository_required)
-                            })
-                            .await
-                            .unwrap_or(Err(SaveError::Write))
-                        },
-                        Message::Saved,
-                    );
+                    return self.save_settings(draft);
                 }
             }
             Message::Saved(result) => match result {
@@ -347,6 +388,65 @@ impl App {
 
     fn is_busy(&self) -> bool {
         self.download.is_running() || self.rebuild.as_ref().is_some_and(rebuild::Run::is_running)
+    }
+
+    fn lookup_settings_branches(&mut self, allow_head: bool) -> Task<Message> {
+        let Screen::Settings(state) = &mut self.screen else {
+            return Task::none();
+        };
+        let Some(lookup) = state.branch_lookup(allow_head) else {
+            return Task::none();
+        };
+        self.settings_lookup_generation += 1;
+        let generation = self.settings_lookup_generation;
+        let runner = self.commands.clone().with_secret(lookup.token.clone());
+        let mut tasks = Vec::new();
+        if let Some(path) = lookup.path {
+            let path = self
+                .home
+                .as_deref()
+                .and_then(|home| config::absolute_repo_path(&path, home).ok());
+            let runner = runner.clone();
+            let repository = lookup.repository.clone();
+            let (task, handle) = Task::perform(
+                async move {
+                    match path {
+                        Some(path) => git::local_branches(&runner, &path, &repository).await,
+                        None => Vec::new(),
+                    }
+                },
+                move |branches| Message::SettingsBranches(generation, branches),
+            )
+            .abortable();
+            state.branches_started(generation, handle);
+            tasks.push(task);
+        }
+        if lookup.check_head {
+            let (task, handle) = Task::perform(
+                async move { git::remote_head(&runner, &lookup.repository, &lookup.token).await },
+                move |branch| Message::SettingsHead(generation, branch),
+            )
+            .abortable();
+            state.head_started(generation, handle);
+            tasks.push(task);
+        }
+        Task::batch(tasks)
+    }
+
+    fn save_settings(&self, draft: Config) -> Task<Message> {
+        let repository_required = self
+            .config
+            .as_ref()
+            .and_then(Config::repository_path)
+            .is_some();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || config::save(draft, repository_required))
+                    .await
+                    .unwrap_or(Err(SaveError::Write))
+            },
+            Message::Saved,
+        )
     }
 
     fn interrupt_rebuild(&mut self) {

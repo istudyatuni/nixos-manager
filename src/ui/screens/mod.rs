@@ -3,5 +3,5 @@ pub mod settings;
 
 pub enum Screen {
     Overview,
-    Settings(settings::State),
+    Settings(Box<settings::State>),
 }

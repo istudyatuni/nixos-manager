@@ -173,7 +173,7 @@ pub fn display_repo_path<'a>(path: &'a Path, home: Option<&Path>) -> Cow<'a, Pat
     }
 }
 
-fn github_repository(input: &str) -> Option<String> {
+pub fn github_repository(input: &str) -> Option<String> {
     let url = github_url(input)?;
     let mut segments = url.path_segments()?;
     let owner = segments.next()?;
@@ -207,7 +207,7 @@ pub fn github_url(input: &str) -> Option<Url> {
     Some(url)
 }
 
-fn absolute_repo_path(input: &Path, home: &Path) -> Result<PathBuf, SaveError> {
+pub fn absolute_repo_path(input: &Path, home: &Path) -> Result<PathBuf, SaveError> {
     if input.as_os_str().is_empty() || input.as_os_str().as_encoded_bytes().contains(&0) {
         return Err(SaveError::Path);
     }
@@ -219,7 +219,7 @@ fn absolute_repo_path(input: &Path, home: &Path) -> Result<PathBuf, SaveError> {
     path::absolute(input).map_err(|_| SaveError::Path)
 }
 
-fn valid_branch(branch: &str) -> bool {
+pub fn valid_branch(branch: &str) -> bool {
     // These are the Git branch-name rules for literal names.
     branch != "HEAD"
         && !branch.starts_with('-')
