@@ -54,6 +54,10 @@ impl State {
         !self.journal.is_empty()
     }
 
+    pub fn journal_text(&self) -> Option<String> {
+        self.journal.text()
+    }
+
     pub fn clear_journal(&mut self) {
         self.journal = journal::Output::default();
     }

@@ -1,7 +1,7 @@
 use std::{env, path::PathBuf, time::Duration};
 
 use iced::{
-    Center, Element, Fill, Subscription, Task, Theme,
+    Center, Element, Fill, Subscription, Task, Theme, clipboard,
     futures::{SinkExt, stream::unfold},
     stream,
     widget::{button, column, container, row, space, text},
@@ -206,6 +206,12 @@ impl App {
             }
             Message::Overview(overview::Message::ToggleJournal) => {
                 self.overview.journal_expanded = !self.overview.journal_expanded;
+            }
+            Message::Overview(overview::Message::CopyJournal) => {
+                return self
+                    .overview
+                    .journal_text()
+                    .map_or_else(Task::none, clipboard::write);
             }
             Message::Overview(overview::Message::ClearJournal) => self.overview.clear_journal(),
             Message::Overview(overview::Message::SelectText(target, action)) => {

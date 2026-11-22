@@ -28,6 +28,10 @@ impl Output {
         self.log.borrow().is_empty()
     }
 
+    pub fn text(&self) -> Option<String> {
+        self.log.borrow().text()
+    }
+
     pub fn append(&mut self, lines: impl IntoIterator<Item = String>) {
         self.log.get_mut().append(lines);
     }

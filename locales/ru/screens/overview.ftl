@@ -48,5 +48,6 @@ overview-rebuild-invalid-path = Не удалось использовать п�
 overview-rebuild-missing-flake = В указанной поддиректории не найден flake.nix.
 overview-show-journal = Развернуть журнал
 overview-hide-journal = Свернуть журнал
+overview-copy-journal = Скопировать логи
 overview-clear-journal = Очистить логи
 overview-journal-empty = Здесь появится вывод команд.

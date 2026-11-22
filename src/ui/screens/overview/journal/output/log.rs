@@ -43,6 +43,16 @@ impl Log {
         self.lines.is_empty()
     }
 
+    pub(super) fn text(&self) -> Option<String> {
+        (!self.is_empty()).then(|| {
+            self.lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+    }
+
     pub(super) fn append(&mut self, lines: impl IntoIterator<Item = String>) {
         self.lines.extend(lines.into_iter().map(|text| Line {
             text,

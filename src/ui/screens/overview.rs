@@ -45,6 +45,7 @@ pub enum Message {
     Rebuild,
     InterruptRebuild,
     ToggleJournal,
+    CopyJournal,
     ClearJournal,
     SelectText(selection::Target, text_editor::Action),
 }
