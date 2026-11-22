@@ -8,8 +8,8 @@ use iced::{
     Center, Element, Fill,
     task::Handle,
     widget::{
-        Column, Row, TextInput, button, column, container, pick_list, row, scrollable, space, text,
-        text_input,
+        Column, Row, TextInput, button, column, pick_list, row, scrollable, space, text,
+        text_input, tooltip,
     },
 };
 
@@ -20,7 +20,10 @@ use crate::{
     },
     git::{self, Branch, RemoteBranches, RemoteBranchesError},
     i18n::{I18n, LanguagePreference},
-    ui::style::{buttons, colors, inputs, pick_lists, spacing},
+    ui::{
+        modal,
+        style::{buttons, colors, containers, inputs, pick_lists, spacing},
+    },
 };
 
 mod repository_input;
@@ -36,11 +39,14 @@ pub enum Message {
     BranchChanged(String),
     FlakeDirectoryChanged(String),
     InputFocused,
+    Cancel,
+    BackdropPressed,
     Save,
 }
 
 pub enum Action {
     None,
+    Close,
     LookupBranches,
     PreviewLanguage(LanguagePreference),
     Save(Config),
@@ -116,8 +122,16 @@ impl State {
         self.error = Some(error);
     }
 
+    fn has_changes(&self) -> bool {
+        self.draft != *self.original
+    }
+
     fn can_save(&self, operation_idle: bool) -> bool {
-        operation_idle && !self.saving && self.draft != *self.original
+        operation_idle && !self.saving && self.has_changes()
+    }
+
+    fn can_dismiss_from_backdrop(&self) -> bool {
+        !self.saving && !self.has_changes()
     }
 
     fn needs_head(&self) -> bool {
@@ -232,6 +246,14 @@ impl State {
             return Action::None;
         }
         match message {
+            Message::Cancel => return Action::Close,
+            Message::BackdropPressed => {
+                return if self.can_dismiss_from_backdrop() {
+                    Action::Close
+                } else {
+                    Action::None
+                };
+            }
             Message::InputFocused => return Action::LookupBranches,
             Message::Save => {
                 if !self.can_save(operation_idle) || self.save_after_lookup {
@@ -296,12 +318,22 @@ impl State {
                 self.auto_branch = false;
             }
             Message::FlakeDirectoryChanged(value) => self.draft.flake_directory = value.into(),
-            Message::InputFocused | Message::Save => unreachable!(),
+            Message::InputFocused | Message::Cancel | Message::BackdropPressed | Message::Save => {
+                unreachable!()
+            }
         }
         Action::None
     }
 
     pub fn view<'a>(&'a self, i18n: &'a I18n, operation_idle: bool) -> Element<'a, Message> {
+        modal::dialog(
+            move || self.panel(i18n, operation_idle),
+            self.can_dismiss_from_backdrop()
+                .then_some(Message::BackdropPressed),
+        )
+    }
+
+    fn panel<'a>(&'a self, i18n: &'a I18n, operation_idle: bool) -> Element<'a, Message> {
         let editing = !self.saving;
         let submit =
             (self.can_save(operation_idle) && !self.save_after_lookup).then_some(Message::Save);
@@ -421,13 +453,14 @@ impl State {
         ]
         .spacing(spacing::XL);
 
-        let mut form = column![interface, repository].spacing(spacing::XL);
+        let form = column![interface, repository].spacing(spacing::XL);
 
+        let mut footer = Column::new().spacing(spacing::MD);
         if let Some(error) = self.error {
-            form = form.push(text(error_text(i18n, error)).size(14).color(colors::DANGER));
+            footer = footer.push(text(error_text(i18n, error)).size(14).color(colors::DANGER));
         }
         if !operation_idle {
-            form = form.push(
+            footer = footer.push(
                 text(i18n.text("settings-operation-in-progress"))
                     .size(14)
                     .color(colors::INFO),
@@ -443,15 +476,39 @@ impl State {
             .padding([7, 12])
             .style(buttons::primary)
             .on_press_maybe(submit);
-        form = form.push(container(save).align_right(Fill));
-
-        let form = container(form).width(Fill).max_width(488);
-        scrollable(
-            container(form)
-                .padding(spacing::PAGE_PADDING)
-                .center_x(Fill),
+        let cancel = button(text(i18n.text("settings-cancel")))
+            .padding([7, 12])
+            .style(buttons::secondary)
+            .on_press_maybe(editing.then_some(Message::Cancel));
+        let close = tooltip(
+            button(text("×").size(20).center())
+                .width(32)
+                .height(32)
+                .padding(0)
+                .style(buttons::secondary)
+                .on_press_maybe(editing.then_some(Message::Cancel)),
+            text(i18n.text("settings-close")).size(13),
+            tooltip::Position::Bottom,
         )
-        .height(Fill)
+        .style(containers::card);
+
+        let header = row![
+            text(i18n.text("app-open-settings")).size(22),
+            space().width(Fill),
+            close
+        ]
+        .align_y(Center)
+        .spacing(spacing::LG);
+        let footer = footer.push(row![cancel, space().width(Fill), save].spacing(spacing::LG));
+        column![
+            header,
+            scrollable(form)
+                .width(Fill)
+                .height(Fill)
+                .spacing(spacing::MD),
+            footer,
+        ]
+        .spacing(spacing::XL)
         .into()
     }
 }

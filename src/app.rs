@@ -16,6 +16,7 @@ use crate::{
     i18n::{I18n, LanguagePreference},
     rebuild,
     ui::{
+        modal,
         screens::{Screen, overview, settings},
         style::{self, buttons, containers, spacing},
     },
@@ -49,7 +50,6 @@ pub struct App {
 pub enum Message {
     WindowCloseRequested(window::Id),
     OpenSettings,
-    CloseSettings,
     Overview(overview::Message),
     Settings(settings::Message),
     FocusSettingsInput(bool),
@@ -190,14 +190,6 @@ impl App {
                 )));
                 return self.lookup_settings_branches(true);
             }
-            Message::CloseSettings => {
-                if matches!(&self.screen, Screen::Settings(state) if !state.saving()) {
-                    let language = self.config.as_ref().map(|config| config.language);
-                    self.set_language(language.unwrap_or_default());
-                    self.screen = Screen::Overview;
-                    return self.inspect_repository();
-                }
-            }
             Message::Overview(overview::Message::SetBoot(boot)) => {
                 if !self.is_busy() {
                     self.steps.boot = boot;
@@ -324,6 +316,12 @@ impl App {
                 if let Screen::Settings(state) = &mut self.screen {
                     match state.update(message, can_save) {
                         settings::Action::None => {}
+                        settings::Action::Close => {
+                            let language = self.config.as_ref().map(|config| config.language);
+                            self.set_language(language.unwrap_or_default());
+                            self.screen = Screen::Overview;
+                            return self.inspect_repository();
+                        }
                         settings::Action::LookupBranches => {
                             return self.lookup_settings_branches(true);
                         }
@@ -579,52 +577,47 @@ impl App {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        let (title, action, navigation, content) = match &self.screen {
-            Screen::Overview => {
-                let repository = self.config.as_ref().and_then(|config| {
-                    config.repository_path().map(|path| overview::Repository {
-                        path: config::display_repo_path(path, self.home.as_deref()),
-                        selected_branch: &config.branch,
-                        git_available: self.git_available,
-                        rebuild_tools: self.rebuild_tools,
-                        working_copy: &self.working_copy,
-                        steps: self.steps,
-                        needs_build: self.current_build().is_none(),
-                        busy: self.is_busy(),
-                        download: &self.download,
-                    })
-                });
-                (
-                    self.title(),
-                    self.i18n.text("app-open-settings"),
-                    (!self.loading).then_some(Message::OpenSettings),
-                    overview::view(
-                        &self.i18n,
-                        repository,
-                        self.loading,
-                        self.load_error,
-                        self.rebuild.as_ref(),
-                        &self.overview,
-                    )
-                    .map(Message::Overview),
-                )
-            }
-            Screen::Settings(state) => (
-                self.i18n.text("app-open-settings"),
-                self.i18n.text("app-back"),
-                (!state.saving()).then_some(Message::CloseSettings),
+        let dialog = match &self.screen {
+            Screen::Overview => None,
+            Screen::Settings(state) => Some(
                 state
                     .view(&self.i18n, !self.is_busy())
                     .map(Message::Settings),
             ),
         };
+        modal::over(self.overview_view(), dialog)
+    }
+
+    fn overview_view(&self) -> Element<'_, Message> {
+        let repository = self.config.as_ref().and_then(|config| {
+            config.repository_path().map(|path| overview::Repository {
+                path: config::display_repo_path(path, self.home.as_deref()),
+                selected_branch: &config.branch,
+                git_available: self.git_available,
+                rebuild_tools: self.rebuild_tools,
+                working_copy: &self.working_copy,
+                steps: self.steps,
+                needs_build: self.current_build().is_none(),
+                busy: self.is_busy(),
+                download: &self.download,
+            })
+        });
+        let content = overview::view(
+            &self.i18n,
+            repository,
+            self.loading,
+            self.load_error,
+            self.rebuild.as_ref(),
+            &self.overview,
+        )
+        .map(Message::Overview);
         let toolbar = row![
-            text(title).size(22),
+            text(self.title()).size(22),
             space().width(Fill),
-            button(text(action))
+            button(text(self.i18n.text("app-open-settings")))
                 .padding([7, 12])
                 .style(buttons::secondary)
-                .on_press_maybe(navigation),
+                .on_press_maybe((!self.loading).then_some(Message::OpenSettings)),
         ]
         .align_y(Center)
         .spacing(spacing::LG);
