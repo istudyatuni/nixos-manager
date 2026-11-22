@@ -32,6 +32,7 @@ pub(super) struct RepositoryInput<'a> {
 
 struct Suggestions<'a> {
     value: &'a str,
+    auto_branch: bool,
     filtered: Vec<&'a str>,
     unfiltered: Vec<&'a str>,
 }
@@ -71,21 +72,25 @@ impl<'a> RepositoryInput<'a> {
         }
     }
 
-    pub(super) fn branches(mut self, value: &'a str, branches: &'a [String]) -> Self {
-        if !branches.is_empty() {
-            self.input = self.input.icon(text_input::Icon {
-                font: Renderer::ICON_FONT,
-                code_point: Renderer::ARROW_DOWN_ICON,
-                size: Some(10.0.into()),
-                spacing: 8.0,
-                side: text_input::Side::Right,
-            });
-            self.suggestions = Some(Suggestions {
-                value,
-                filtered: filter_branches(branches, value),
-                unfiltered: branches.iter().map(String::as_str).collect(),
-            });
-        }
+    pub(super) fn branches(
+        mut self,
+        value: &'a str,
+        branches: &'a [String],
+        auto_branch: bool,
+    ) -> Self {
+        self.input = self.input.icon(text_input::Icon {
+            font: Renderer::ICON_FONT,
+            code_point: Renderer::ARROW_DOWN_ICON,
+            size: Some(10.0.into()),
+            spacing: 8.0,
+            side: text_input::Side::Right,
+        });
+        self.suggestions = Some(Suggestions {
+            value,
+            auto_branch,
+            filtered: filter_branches(branches, value),
+            unfiltered: branches.iter().map(String::as_str).collect(),
+        });
         self
     }
 
@@ -136,9 +141,17 @@ impl Widget<Message, Theme, Renderer> for RepositoryInput<'_> {
             .map(|suggestions| suggestions.value);
         if state.value.as_deref() != value {
             state.value = value.map(str::to_owned);
-            state.show(MenuMode::Filtered);
-            // Enter submits a typed value until the user navigates the suggestions.
-            state.hovered = None;
+            // A default branch filled by the lookup should leave the picker open.
+            if state.mode != MenuMode::All
+                || !self
+                    .suggestions
+                    .as_ref()
+                    .is_some_and(|items| items.auto_branch)
+            {
+                state.show(MenuMode::Filtered);
+                // Enter submits a typed value until the user navigates the suggestions.
+                state.hovered = None;
+            }
         }
     }
 
@@ -187,19 +200,29 @@ impl Widget<Message, Theme, Renderer> for RepositoryInput<'_> {
                 | Event::Touch(touch::Event::FingerPressed { .. })
         );
         let arrow_clicked = pressed && self.suggestions.is_some() && over_arrow(layout, cursor);
-        let handled = if arrow_clicked {
+        let key = match event {
+            Event::Keyboard(KeyPressed {
+                key: Named(key),
+                modifiers,
+                ..
+            }) if input.state.downcast_ref::<InputState>().is_focused() => Some((*key, *modifiers)),
+            _ => None,
+        };
+        let open_from_keyboard = self.suggestions.is_some()
+            && state.mode != MenuMode::All
+            && matches!(key, Some((Key::ArrowDown, modifiers)) if modifiers.alt() || self.options(state).is_empty());
+        let handled = if arrow_clicked || open_from_keyboard {
             input.state.downcast_mut::<InputState>().focus();
-            state.show(if state.mode == MenuMode::All {
-                MenuMode::Closed
+            if state.mode == MenuMode::All {
+                state.show(MenuMode::Closed);
             } else {
-                MenuMode::All
-            });
+                state.show(MenuMode::All);
+                shell.publish(Message::BranchPickerOpened);
+            }
             true
-        } else if input.state.downcast_ref::<InputState>().is_focused()
-            && let Event::Keyboard(KeyPressed {
-                key: Named(key), ..
-            }) = event
-            && !self.options(state).is_empty()
+        } else if let Some((key, _)) = key
+            && (!self.options(state).is_empty()
+                || key == Key::Escape && state.mode == MenuMode::All)
         {
             let options = self.options(state);
             match key {

@@ -50,8 +50,8 @@ pub struct Branch {
 }
 
 #[derive(Clone)]
-pub struct RemoteBranches {
-    pub branches: Vec<Branch>,
+pub struct RemoteRefs {
+    pub branches: Option<Vec<Branch>>,
     pub default_branch: Option<String>,
 }
 
@@ -112,28 +112,12 @@ pub async fn remote_branches(
     repository: &str,
     token: &str,
     reference: Option<&Path>,
-) -> Result<RemoteBranches, RemoteBranchesError> {
-    use RemoteBranchesError::{Network, Unavailable};
-
+) -> Result<RemoteRefs, RemoteBranchesError> {
+    use RemoteBranchesError::Unavailable;
     let directory = tempfile::tempdir().map_err(|_| Unavailable)?;
-    let resolved = run(
-        runner,
-        command()
-            .current_dir(directory.path())
-            .args(["ls-remote", "--get-url", "--", repository]),
-        Error::Fetch,
-    )
-    .await
-    .map_err(|_| Unavailable)?;
-    let remote = matching_remote(&resolved, repository).map_err(|_| Unavailable)?;
-    let mut git =
-        network_command(directory.path(), repository, token, remote).map_err(|_| Unavailable)?;
+    let mut git = ref_lookup_command(runner, directory.path(), repository, token).await?;
     // A treeless shallow clone keeps branch-tip commit dates out of the working copy.
-    git.env("LC_ALL", "C").args([
-        "-c",
-        "http.lowSpeedLimit=1",
-        "-c",
-        "http.lowSpeedTime=10",
+    git.args([
         "clone",
         "--bare",
         "--depth=1",
@@ -149,7 +133,94 @@ pub async fn remote_branches(
         git.arg("--reference-if-able").arg(reference);
     }
     git.args(["--", repository]).arg(directory.path());
-    let output = tokio::time::timeout(Duration::from_secs(15), runner.output(&mut git))
+    run_ref_lookup(runner, &mut git).await?;
+
+    let branches = read_branches(runner, directory.path())
+        .await
+        .map_err(|_| Unavailable)?;
+    let default_branch = current_branch(runner, directory.path())
+        .await
+        .ok()
+        .and_then(|head| String::from_utf8(head).ok())
+        .filter(|head| branches.iter().any(|branch| &branch.name == head));
+    Ok(RemoteRefs {
+        branches: Some(branches),
+        default_branch,
+    })
+}
+
+pub async fn remote_head(
+    runner: &CommandRunner,
+    repository: &str,
+    token: &str,
+) -> Result<RemoteRefs, RemoteBranchesError> {
+    let directory = tempfile::tempdir().map_err(|_| RemoteBranchesError::Unavailable)?;
+    let mut git = ref_lookup_command(runner, directory.path(), repository, token).await?;
+    let output = run_ref_lookup(
+        runner,
+        git.args(["ls-remote", "--symref", "--", repository, "HEAD"]),
+    )
+    .await?;
+    Ok(RemoteRefs {
+        branches: None,
+        default_branch: parse_remote_head(&output),
+    })
+}
+
+fn parse_remote_head(output: &[u8]) -> Option<String> {
+    output.split(|&byte| byte == b'\n').find_map(|line| {
+        let name = std::str::from_utf8(line)
+            .ok()?
+            .strip_prefix("ref: refs/heads/")?
+            .strip_suffix("\tHEAD")?;
+        valid_branch(name).then(|| name.to_owned())
+    })
+}
+
+#[cfg(test)]
+#[test]
+fn reads_only_the_symbolic_head_of_the_remote() {
+    assert_eq!(
+        parse_remote_head(b"ref: refs/heads/release/main\tHEAD\n123456\tHEAD\n").as_deref(),
+        Some("release/main")
+    );
+    assert_eq!(parse_remote_head(b"123456\tHEAD\n"), None);
+    assert_eq!(
+        parse_remote_head(b"ref: refs/heads/other\trefs/heads/HEAD\n"),
+        None
+    );
+    assert_eq!(parse_remote_head(b""), None);
+}
+
+async fn ref_lookup_command(
+    runner: &CommandRunner,
+    directory: &Path,
+    repository: &str,
+    token: &str,
+) -> Result<Command, RemoteBranchesError> {
+    use RemoteBranchesError::Unavailable;
+    let resolved = run(
+        runner,
+        command()
+            .current_dir(directory)
+            .args(["ls-remote", "--get-url", "--", repository]),
+        Error::Fetch,
+    )
+    .await
+    .map_err(|_| Unavailable)?;
+    let remote = matching_remote(&resolved, repository).map_err(|_| Unavailable)?;
+    let mut git = network_command(directory, repository, token, remote).map_err(|_| Unavailable)?;
+    git.env("LC_ALL", "C")
+        .args(["-c", "http.lowSpeedLimit=1", "-c", "http.lowSpeedTime=10"]);
+    Ok(git)
+}
+
+async fn run_ref_lookup(
+    runner: &CommandRunner,
+    git: &mut Command,
+) -> Result<Vec<u8>, RemoteBranchesError> {
+    use RemoteBranchesError::{Network, Unavailable};
+    let output = tokio::time::timeout(Duration::from_secs(15), runner.output(git))
         .await
         .map_err(|_| Network)?
         .map_err(|_| Unavailable)?;
@@ -161,18 +232,7 @@ pub async fn remote_branches(
         });
     }
 
-    let branches = read_branches(runner, directory.path())
-        .await
-        .map_err(|_| Unavailable)?;
-    let default_branch = current_branch(runner, directory.path())
-        .await
-        .ok()
-        .and_then(|head| String::from_utf8(head).ok())
-        .filter(|head| branches.iter().any(|branch| &branch.name == head));
-    Ok(RemoteBranches {
-        branches,
-        default_branch,
-    })
+    Ok(output.stdout)
 }
 
 async fn alternate_for(runner: &CommandRunner, path: &Path) -> Option<PathBuf> {

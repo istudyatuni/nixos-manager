@@ -18,7 +18,7 @@ use crate::{
         CONFIG_DIRECTORY, Config, DEFAULT_REPO_PATH, SaveError, UI_SCALES, display_repo_path,
         github_repository, valid_token,
     },
-    git::{self, Branch, RemoteBranches, RemoteBranchesError},
+    git::{self, Branch, RemoteBranchesError, RemoteRefs},
     i18n::{I18n, LanguagePreference},
     ui::{
         modal,
@@ -39,6 +39,7 @@ pub enum Message {
     BranchChanged(String),
     FlakeDirectoryChanged(String),
     InputFocused,
+    BranchPickerOpened,
     Cancel,
     BackdropPressed,
     Save,
@@ -47,7 +48,7 @@ pub enum Message {
 pub enum Action {
     None,
     Close,
-    LookupBranches,
+    LookupBranches(Option<RemoteQuery>),
     PreviewLanguage(LanguagePreference),
     Save(Config),
 }
@@ -57,16 +58,26 @@ pub struct BranchLookup {
     pub path: PathBuf,
     pub token: String,
     pub check_local: bool,
-    pub check_remote: bool,
+    pub remote: Option<RemoteQuery>,
 }
 
-enum Lookup<T> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RemoteQuery {
+    Head,
+    Branches,
+}
+
+enum Lookup<T, Query = ()> {
     Pending,
-    Running { id: u64, _handle: Handle },
+    Running {
+        id: u64,
+        query: Query,
+        _handle: Handle,
+    },
     Finished(T),
 }
 
-impl<T> Lookup<T> {
+impl<T, Query> Lookup<T, Query> {
     fn finish(&mut self, id: u64, result: T) -> bool {
         if !matches!(self, Self::Running { id: current, .. } if *current == id) {
             return false;
@@ -84,7 +95,7 @@ pub struct State {
     git_available: bool,
     repository: Option<String>,
     local: Lookup<Vec<Branch>>,
-    remote: Lookup<Result<RemoteBranches, RemoteBranchesError>>,
+    remote: Lookup<Result<RemoteRefs, RemoteBranchesError>, RemoteQuery>,
     branch_names: Vec<String>,
     auto_branch: bool,
     save_after_lookup: bool,
@@ -155,13 +166,24 @@ impl State {
             }
     }
 
-    pub fn branch_lookup(&self, allow_remote: bool) -> Option<BranchLookup> {
+    pub fn branch_lookup(&self, remote: Option<RemoteQuery>) -> Option<BranchLookup> {
         let repository = self.repository.as_ref()?;
         let token = self.draft.token.trim();
         let check_local = matches!(self.local, Lookup::Pending);
-        let check_remote =
-            allow_remote && matches!(self.remote, Lookup::Pending) && valid_token(token);
-        if !self.git_available || (!check_local && !check_remote) {
+        let remote = remote.filter(|query| {
+            valid_token(token)
+                && match &self.remote {
+                    Lookup::Pending => true,
+                    Lookup::Running { query: running, .. } => {
+                        *query == RemoteQuery::Branches && *running == RemoteQuery::Head
+                    }
+                    Lookup::Finished(Ok(refs)) => {
+                        *query == RemoteQuery::Branches && refs.branches.is_none()
+                    }
+                    Lookup::Finished(Err(_)) => *query == RemoteQuery::Branches,
+                }
+        });
+        if !self.git_available || (!check_local && remote.is_none()) {
             return None;
         }
         Some(BranchLookup {
@@ -169,20 +191,22 @@ impl State {
             path: self.draft.path.clone(),
             token: token.to_owned(),
             check_local,
-            check_remote,
+            remote,
         })
     }
 
     pub fn local_branches_started(&mut self, id: u64, handle: Handle) {
         self.local = Lookup::Running {
             id,
+            query: (),
             _handle: handle.abort_on_drop(),
         };
     }
 
-    pub fn remote_branches_started(&mut self, id: u64, handle: Handle) {
+    pub fn remote_lookup_started(&mut self, id: u64, query: RemoteQuery, handle: Handle) {
         self.remote = Lookup::Running {
             id,
+            query,
             _handle: handle.abort_on_drop(),
         };
     }
@@ -200,10 +224,10 @@ impl State {
         }
     }
 
-    pub fn remote_branches_finished(
+    pub fn remote_lookup_finished(
         &mut self,
         id: u64,
-        result: Result<RemoteBranches, RemoteBranchesError>,
+        result: Result<RemoteRefs, RemoteBranchesError>,
         operation_idle: bool,
     ) -> Option<Config> {
         if !self.remote.finish(id, result) {
@@ -230,7 +254,7 @@ impl State {
             _ => &[],
         };
         let remote = match &self.remote {
-            Lookup::Finished(Ok(remote)) => remote.branches.as_slice(),
+            Lookup::Finished(Ok(remote)) => remote.branches.as_deref().unwrap_or_default(),
             _ => &[],
         };
         self.branch_names = git::branch_names(local, remote);
@@ -254,7 +278,10 @@ impl State {
                     Action::None
                 };
             }
-            Message::InputFocused => return Action::LookupBranches,
+            Message::InputFocused => return Action::LookupBranches(None),
+            Message::BranchPickerOpened => {
+                return Action::LookupBranches(Some(RemoteQuery::Branches));
+            }
             Message::Save => {
                 if !self.can_save(operation_idle) || self.save_after_lookup {
                     return Action::None;
@@ -269,7 +296,7 @@ impl State {
                         self.remote = Lookup::Pending;
                     }
                     self.save_after_lookup = true;
-                    return Action::LookupBranches;
+                    return Action::LookupBranches(Some(RemoteQuery::Head));
                 }
                 return Action::Save(self.start_save());
             }
@@ -318,9 +345,11 @@ impl State {
                 self.auto_branch = false;
             }
             Message::FlakeDirectoryChanged(value) => self.draft.flake_directory = value.into(),
-            Message::InputFocused | Message::Cancel | Message::BackdropPressed | Message::Save => {
-                unreachable!()
-            }
+            Message::InputFocused
+            | Message::BranchPickerOpened
+            | Message::Cancel
+            | Message::BackdropPressed
+            | Message::Save => unreachable!(),
         }
         Action::None
     }
@@ -374,27 +403,24 @@ impl State {
         )
         .on_input_maybe(editing.then_some(Message::PathChanged))
         .on_submit_maybe(submit.clone());
-        let branch_editing = editing
-            && self.repository.is_some()
-            && (!self.needs_head() || matches!(self.remote, Lookup::Finished(_)));
+        let branch_editing = editing && self.repository.is_some();
         let branch = text_input(
             &i18n.text("settings-branch-placeholder"),
             &self.draft.branch,
         )
         .on_input_maybe(branch_editing.then_some(Message::BranchChanged))
         .on_submit_maybe(submit.clone());
-        let branches = if branch_editing {
-            self.branch_names.as_slice()
-        } else {
-            &[]
-        };
-        let mut branch = field(
-            i18n.text("settings-branch"),
-            RepositoryInput::new(styled_input(branch), editing)
-                .branches(&self.draft.branch, branches)
-                .into_element(),
-        );
+        let mut branch_input = RepositoryInput::new(styled_input(branch), branch_editing);
+        if branch_editing && self.git_available {
+            branch_input =
+                branch_input.branches(&self.draft.branch, &self.branch_names, self.auto_branch);
+        }
+        let mut branch = field(i18n.text("settings-branch"), branch_input.into_element());
         let branch_status = match &self.remote {
+            Lookup::Running {
+                query: RemoteQuery::Head,
+                ..
+            } => Some(("settings-branch-checking-remote", colors::INFO)),
             Lookup::Running { .. } => Some(("settings-branch-loading-remote", colors::INFO)),
             Lookup::Finished(Err(RemoteBranchesError::Network)) => {
                 Some(("settings-branch-network-warning", colors::WARNING))
@@ -628,5 +654,45 @@ fn error_text(i18n: &I18n, error: SaveError) -> String {
             args.set("directory", format!("~/{CONFIG_DIRECTORY}"));
             i18n.with_args("settings-error-write", &args)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saving_a_new_repository_only_requests_head() {
+        let mut state = State::new(None, None, true);
+        state.update(
+            Message::RepositoryChanged("https://github.com/example/repo".into()),
+            true,
+        );
+        assert!(matches!(
+            state.update(Message::Save, true),
+            Action::LookupBranches(Some(RemoteQuery::Head))
+        ));
+        let (_, handle) = iced::Task::<()>::none().abortable();
+        state.remote_lookup_started(1, RemoteQuery::Head, handle);
+        assert!(matches!(
+            state
+                .branch_lookup(Some(RemoteQuery::Branches))
+                .unwrap()
+                .remote,
+            Some(RemoteQuery::Branches)
+        ));
+        let draft = state
+            .remote_lookup_finished(
+                1,
+                Ok(RemoteRefs {
+                    branches: None,
+                    default_branch: Some("main".to_owned()),
+                }),
+                true,
+            )
+            .unwrap();
+        assert_eq!(draft.branch, "main");
+        let lookup = state.branch_lookup(Some(RemoteQuery::Branches)).unwrap();
+        assert!(matches!(lookup.remote, Some(RemoteQuery::Branches)));
     }
 }

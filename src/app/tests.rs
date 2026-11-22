@@ -1,5 +1,5 @@
 use iced::{
-    Font, Pixels, Rectangle, Renderer, Size,
+    Font, Pixels, Point, Rectangle, Renderer, Size,
     advanced::{
         Layout, Shell, clipboard, layout, mouse,
         renderer::Headless,
@@ -10,7 +10,7 @@ use iced::{
 use super::*;
 
 #[derive(Default)]
-struct Labels(Vec<(String, Rectangle)>);
+struct Labels(Vec<(String, Rectangle)>, Vec<Rectangle>);
 
 impl Operation for Labels {
     fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
@@ -19,6 +19,15 @@ impl Operation for Labels {
 
     fn text(&mut self, _id: Option<&Id>, bounds: Rectangle, label: &str) {
         self.0.push((label.to_owned(), bounds));
+    }
+
+    fn text_input(
+        &mut self,
+        _id: Option<&Id>,
+        bounds: Rectangle,
+        _state: &mut dyn iced::advanced::widget::operation::TextInput,
+    ) {
+        self.1.push(bounds);
     }
 }
 
@@ -116,6 +125,82 @@ async fn cache_toolbar_button_opens_a_separate_dialog_without_a_repository() {
     let labels = layout(&mut app.view(), &renderer, size).2;
     assert!(labels.contains("Токеном управляет Attic"));
     assert!(labels.contains("Подключить кеш"));
+}
+
+#[tokio::test]
+async fn settings_request_remote_branches_when_the_branch_picker_opens() {
+    let mut app = boot_with_cache(Ok(None));
+    app.config = Some(Config {
+        repository: "https://github.com/example/repository".to_owned(),
+        branch: "main".to_owned(),
+        ..Config::default()
+    });
+    app.git_available = true;
+    assert_eq!(app.update(Message::OpenSettings).units(), 1);
+    let _ = app.update(Message::SettingsLocalBranches(
+        app.settings_lookup_generation,
+        Vec::new(),
+    ));
+
+    let renderer = headless().await;
+    let size = Size::new(800.0, 1000.0);
+    let messages = {
+        let mut view = app.view();
+        let (mut tree, node, labels) = layout(&mut view, &renderer, size);
+        let branch_label = labels.bounds("Branch");
+        let branch_input = labels
+            .1
+            .iter()
+            .find(|bounds| bounds.y > branch_label.y)
+            .unwrap();
+        let mut messages = Vec::new();
+        for point in [
+            branch_input.center(),
+            Point::new(
+                branch_input.x + branch_input.width - 12.0,
+                branch_input.center_y(),
+            ),
+        ] {
+            view.as_widget_mut().update(
+                &mut tree,
+                &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                Layout::new(&node),
+                mouse::Cursor::Available(point),
+                &renderer,
+                &mut clipboard::Null,
+                &mut Shell::new(&mut messages),
+                &Rectangle::with_size(size),
+            );
+        }
+        messages
+    };
+    assert!(matches!(
+        messages.as_slice(),
+        [
+            Message::Settings(settings::Message::InputFocused),
+            Message::Settings(settings::Message::BranchPickerOpened)
+        ]
+    ));
+    for (message, expected_tasks) in messages.into_iter().zip([0, 1]) {
+        assert_eq!(app.update(message).units(), expected_tasks);
+    }
+    assert_eq!(
+        app.update(Message::Settings(settings::Message::BranchPickerOpened))
+            .units(),
+        0
+    );
+    let _ = app.update(Message::SettingsRemoteRefs(
+        app.settings_lookup_generation,
+        Ok(git::RemoteRefs {
+            branches: Some(Vec::new()),
+            default_branch: Some("main".into()),
+        }),
+    ));
+    assert_eq!(
+        app.update(Message::Settings(settings::Message::BranchPickerOpened))
+            .units(),
+        0
+    );
 }
 
 #[tokio::test]

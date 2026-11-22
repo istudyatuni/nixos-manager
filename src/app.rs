@@ -62,7 +62,7 @@ pub enum Message {
     Settings(settings::Message),
     FocusSettingsInput(bool),
     SettingsLocalBranches(u64, Vec<git::Branch>),
-    SettingsRemoteBranches(u64, Result<git::RemoteBranches, git::RemoteBranchesError>),
+    SettingsRemoteRefs(u64, Result<git::RemoteRefs, git::RemoteBranchesError>),
     Loaded(
         Result<Option<Config>, LoadError>,
         Result<Option<attic::Metadata>, attic::LoadError>,
@@ -229,7 +229,7 @@ impl App {
                     self.home.as_deref(),
                     self.git_available,
                 )));
-                return self.lookup_settings_branches(true);
+                return self.lookup_settings_branches(None);
             }
             Message::Overview(overview::Message::SetBoot(boot)) => {
                 if !self.is_busy() {
@@ -278,7 +278,7 @@ impl App {
                 self.overview.set_download_error(&self.i18n, &self.download);
                 if let Screen::Settings(state) = &mut self.screen {
                     state.refresh_local_branches();
-                    return self.lookup_settings_branches(false);
+                    return self.lookup_settings_branches(None);
                 }
                 return self.inspect_repository();
             }
@@ -395,8 +395,8 @@ impl App {
                             self.screen = Screen::Overview;
                             return self.inspect_repository();
                         }
-                        settings::Action::LookupBranches => {
-                            return self.lookup_settings_branches(true);
+                        settings::Action::LookupBranches(remote) => {
+                            return self.lookup_settings_branches(remote);
                         }
                         settings::Action::PreviewLanguage(language) => self.set_language(language),
                         settings::Action::Save(draft) => return self.save_settings(draft),
@@ -419,11 +419,10 @@ impl App {
                     state.local_branches_finished(generation, branches);
                 }
             }
-            Message::SettingsRemoteBranches(generation, result) => {
+            Message::SettingsRemoteRefs(generation, result) => {
                 let can_save = !self.is_busy();
                 if let Screen::Settings(state) = &mut self.screen
-                    && let Some(draft) =
-                        state.remote_branches_finished(generation, result, can_save)
+                    && let Some(draft) = state.remote_lookup_finished(generation, result, can_save)
                 {
                     return self.save_settings(draft);
                 }
@@ -559,11 +558,11 @@ impl App {
         }
     }
 
-    fn lookup_settings_branches(&mut self, allow_remote: bool) -> Task<Message> {
+    fn lookup_settings_branches(&mut self, remote: Option<settings::RemoteQuery>) -> Task<Message> {
         let Screen::Settings(state) = &mut self.screen else {
             return Task::none();
         };
-        let Some(lookup) = state.branch_lookup(allow_remote) else {
+        let Some(lookup) = state.branch_lookup(remote) else {
             return Task::none();
         };
         self.settings_lookup_generation += 1;
@@ -603,22 +602,29 @@ impl App {
             state.local_branches_started(generation, handle);
             tasks.push(task);
         }
-        if lookup.check_remote {
+        if let Some(query) = lookup.remote {
             let (task, handle) = Task::perform(
                 async move {
-                    let worktree = worktree.await;
-                    git::remote_branches(
-                        &runner,
-                        &lookup.repository,
-                        &lookup.token,
-                        worktree.as_deref(),
-                    )
-                    .await
+                    match query {
+                        settings::RemoteQuery::Head => {
+                            git::remote_head(&runner, &lookup.repository, &lookup.token).await
+                        }
+                        settings::RemoteQuery::Branches => {
+                            let worktree = worktree.await;
+                            git::remote_branches(
+                                &runner,
+                                &lookup.repository,
+                                &lookup.token,
+                                worktree.as_deref(),
+                            )
+                            .await
+                        }
+                    }
                 },
-                move |result| Message::SettingsRemoteBranches(generation, result),
+                move |result| Message::SettingsRemoteRefs(generation, result),
             )
             .abortable();
-            state.remote_branches_started(generation, handle);
+            state.remote_lookup_started(generation, query, handle);
             tasks.push(task);
         }
         Task::batch(tasks)
