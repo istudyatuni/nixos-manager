@@ -27,12 +27,14 @@ pub(super) struct Log {
     width: f32,
     bottom: f64,
     selection: Option<(Position, Position)>,
+    draw_origin: Option<Point>,
+    drawn_lines: Vec<usize>,
 }
 
 struct Line {
     text: String,
     is_command: bool,
-    command_drawn: bool,
+    drawn: bool,
     paragraph: Option<Paragraph>,
     top: f64,
 }
@@ -62,7 +64,7 @@ impl Log {
         self.lines.extend(lines.into_iter().map(|line| Line {
             text: line.text,
             is_command: line.is_command,
-            command_drawn: false,
+            drawn: false,
             paragraph: None,
             top: 0.0,
         }));
@@ -71,16 +73,7 @@ impl Log {
         self.first += excess;
         self.laid_out = self.laid_out.saturating_sub(excess);
         if excess > 0 {
-            // Shifting rows can replace a command at the same screen position.
-            // Invalidate old weak references since Iced compares paragraphs by metrics.
-            let bounds = Size::new(self.width, f32::INFINITY);
-            for line in self.lines.iter_mut().filter(|line| line.command_drawn) {
-                line.paragraph
-                    .as_mut()
-                    .expect("drawn command")
-                    .resize(bounds);
-                line.command_drawn = false;
-            }
+            self.invalidate_drawn();
         }
         if let Some((anchor, end)) = &mut self.selection {
             let first = Position {
@@ -201,6 +194,10 @@ impl Log {
         let Some(visible) = bounds.intersection(&viewport) else {
             return;
         };
+        let origin = bounds.position();
+        if self.draw_origin.replace(origin) != Some(origin) {
+            self.invalidate_drawn();
+        }
         let start = self.line_at(visible.y - bounds.y);
         let bottom = visible.y + visible.height;
         let top = self.top();
@@ -211,8 +208,8 @@ impl Log {
             if y >= bottom {
                 break;
             }
-            let paragraph = line.paragraph.as_ref().expect("laid-out log");
             let id = self.first + start + index;
+            let paragraph = line.paragraph.as_ref().expect("laid-out log");
             if let Some(Range { start, end }) = selection
                 && (start.line..=end.line).contains(&id)
             {
@@ -244,21 +241,30 @@ impl Log {
                     }
                 }
             }
-            let position = Point::new(bounds.x, y);
-            let size = Size::new(bounds.width, paragraph.min_height());
-            let clip_bounds = Rectangle::new(position, size);
-            if line.is_command {
+            if !line.text.is_empty() {
+                // Draw the same shaped text that layout and selection use.
+                let position = Point::new(bounds.x, y);
+                let size = Size::new(bounds.width, paragraph.min_height());
+                let clip_bounds = Rectangle::new(position, size);
                 renderer.fill_paragraph(paragraph, position, colors::TEXT, clip_bounds);
-                line.command_drawn = true;
-            } else if !line.text.is_empty() {
-                // Cached text compares the contents as well as the bounds
-                // when the renderer checks what changed in a full journal.
-                renderer.fill_text(
-                    log_text(line.text.clone(), size),
-                    position,
-                    colors::TEXT,
-                    clip_bounds,
-                );
+                if !line.drawn {
+                    self.drawn_lines.push(id);
+                    line.drawn = true;
+                }
+            }
+        }
+    }
+
+    fn invalidate_drawn(&mut self) {
+        // Iced compares paragraph metrics when diffing frames. Moving the
+        // rows can put different text at the same position with equal metrics.
+        // Expire references in the renderer's frame history for drawn rows.
+        let bounds = Size::new(self.width, f32::INFINITY);
+        for id in self.drawn_lines.drain(..) {
+            if let Some(index) = id.checked_sub(self.first) {
+                let line = &mut self.lines[index];
+                line.paragraph.as_mut().expect("drawn log").resize(bounds);
+                line.drawn = false;
             }
         }
     }
