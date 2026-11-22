@@ -11,7 +11,7 @@ use iced::{
 
 use crate::{
     config::{
-        CONFIG_DIRECTORY, Config, DEFAULT_FLAKE_DIRECTORY, DEFAULT_REPO_PATH, SaveError,
+        CONFIG_DIRECTORY, Config, DEFAULT_FLAKE_DIRECTORY, DEFAULT_REPO_PATH, SaveError, UI_SCALES,
         display_repo_path,
     },
     i18n::{I18n, LanguagePreference},
@@ -21,6 +21,7 @@ use crate::{
 #[derive(Clone)]
 pub enum Message {
     LanguageChanged(LanguagePreference),
+    ScaleChanged(u16),
     RepositoryChanged(String),
     TokenChanged(String),
     PathChanged(String),
@@ -50,6 +51,10 @@ impl State {
         self.saving
     }
 
+    pub fn ui_scale(&self) -> u16 {
+        self.draft.ui_scale
+    }
+
     pub fn save_failed(&mut self, error: SaveError) {
         self.saving = false;
         self.error = Some(error);
@@ -63,6 +68,7 @@ impl State {
         self.error = None;
         match message {
             Message::LanguageChanged(value) => self.draft.language = value,
+            Message::ScaleChanged(value) => self.draft.ui_scale = value,
             Message::RepositoryChanged(value) => self.draft.repository = value,
             Message::TokenChanged(value) => self.draft.token = value,
             Message::PathChanged(value) => self.draft.path = value.into(),
@@ -106,8 +112,14 @@ impl State {
         .on_input_maybe(editing.then_some(Message::FlakeDirectoryChanged))
         .on_submit_maybe((editing && can_save).then_some(Message::Save));
 
-        let mut form = column![
+        let interface = column![
+            text(i18n.text("settings-interface-section")).size(18),
             language_field(i18n, self.draft.language, editing),
+            scale_field(i18n, self.draft.ui_scale, editing),
+        ]
+        .spacing(spacing::LG);
+        let repository = column![
+            text(i18n.text("settings-repository-section")).size(18),
             field(i18n.text("settings-repository"), repository),
             field(i18n.text("settings-token"), token),
             field(i18n.text("settings-path"), path).push(
@@ -123,6 +135,8 @@ impl State {
             ),
         ]
         .spacing(spacing::XL);
+
+        let mut form = column![interface, repository].spacing(spacing::XL);
 
         if let Some(error) = self.error {
             form = form.push(text(error_text(i18n, error)).size(14).color(colors::DANGER));
@@ -158,12 +172,12 @@ impl State {
 }
 
 #[derive(Clone, PartialEq)]
-struct LanguageOption {
-    preference: LanguagePreference,
+struct SelectOption<T> {
+    value: T,
     label: String,
 }
 
-impl fmt::Display for LanguageOption {
+impl<T> fmt::Display for SelectOption<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.label)
     }
@@ -175,26 +189,63 @@ fn language_field(i18n: &I18n, selected: LanguagePreference, editing: bool) -> R
         (LanguagePreference::English, "settings-language-english"),
         (LanguagePreference::Russian, "settings-language-russian"),
     ]
-    .map(|(preference, key)| LanguageOption {
-        preference,
+    .into_iter()
+    .map(|(value, key)| SelectOption {
+        value,
         label: i18n.text(key),
-    });
+    })
+    .collect();
+    select_field(
+        i18n.text("settings-language"),
+        options,
+        selected,
+        editing,
+        Message::LanguageChanged,
+    )
+}
+
+fn scale_field(i18n: &I18n, selected: u16, editing: bool) -> Row<'_, Message> {
+    let mut args = FluentArgs::new();
+    let options = UI_SCALES
+        .into_iter()
+        .map(|value| {
+            args.set("percent", value);
+            SelectOption {
+                value,
+                label: i18n.with_args("settings-scale-percent", &args),
+            }
+        })
+        .collect();
+    select_field(
+        i18n.text("settings-scale"),
+        options,
+        selected,
+        editing,
+        Message::ScaleChanged,
+    )
+}
+
+fn select_field<'a, T: Clone + PartialEq + 'a>(
+    label: String,
+    options: Vec<SelectOption<T>>,
+    selected: T,
+    editing: bool,
+    on_select: impl Fn(T) -> Message + 'a,
+) -> Row<'a, Message> {
     let selected = options
         .iter()
-        .find(|option| option.preference == selected)
+        .find(|option| option.value == selected)
         .cloned();
 
     let width = 176;
     let control: Element<'_, Message> = if editing {
-        pick_list(options, selected, |option| {
-            Message::LanguageChanged(option.preference)
-        })
-        .width(width)
-        .text_size(15)
-        .padding([8, 10])
-        .style(pick_lists::field)
-        .menu_style(pick_lists::menu)
-        .into()
+        pick_list(options, selected, move |option| on_select(option.value))
+            .width(width)
+            .text_size(15)
+            .padding([8, 10])
+            .style(pick_lists::field)
+            .menu_style(pick_lists::menu)
+            .into()
     } else {
         text_input("", selected.as_ref().map_or("", |option| &option.label))
             .width(width)
@@ -204,13 +255,9 @@ fn language_field(i18n: &I18n, selected: LanguagePreference, editing: bool) -> R
             .into()
     };
 
-    row![
-        text(i18n.text("settings-language")).size(14),
-        space().width(Fill),
-        control,
-    ]
-    .align_y(Center)
-    .spacing(spacing::LG)
+    row![text(label).size(14), space().width(Fill), control,]
+        .align_y(Center)
+        .spacing(spacing::LG)
 }
 
 fn field(label: String, input: TextInput<'_, Message>) -> Column<'_, Message> {

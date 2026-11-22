@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     command_runner::{CommandRunner, LogLine},
-    config::{self, Config, LoadError, SaveError},
+    config::{self, Config, DEFAULT_UI_SCALE, LoadError, SaveError},
     git,
     i18n::I18n,
     rebuild::{self, Mode},
@@ -131,6 +131,17 @@ impl App {
 
     pub fn theme(&self) -> Theme {
         self.theme.clone()
+    }
+
+    pub fn scale_factor(&self) -> f32 {
+        let scale = match &self.screen {
+            Screen::Overview => self
+                .config
+                .as_ref()
+                .map_or(DEFAULT_UI_SCALE, |config| config.ui_scale),
+            Screen::Settings(state) => state.ui_scale(),
+        };
+        f32::from(scale) / 100.0
     }
 
     pub fn subscription(&self) -> Subscription<Message> {

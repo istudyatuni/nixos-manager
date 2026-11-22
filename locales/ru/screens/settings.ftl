@@ -1,7 +1,11 @@
+settings-interface-section = Интерфейс
 settings-language = Язык интерфейса
 settings-language-system = Как в системе
 settings-language-english = English
 settings-language-russian = Русский
+settings-scale = Масштаб интерфейса
+settings-scale-percent = { $percent }%
+settings-repository-section = Репозиторий
 settings-repository = Ссылка на репозиторий GitHub
 settings-repository-placeholder = https://github.com/owner/repository
 settings-token = Токен доступа GitHub

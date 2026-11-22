@@ -15,11 +15,15 @@ use crate::i18n::LanguagePreference;
 pub const CONFIG_DIRECTORY: &str = ".config/nixos-manager";
 pub const DEFAULT_REPO_PATH: &str = "~/.config/nixos-manager/repo";
 pub const DEFAULT_FLAKE_DIRECTORY: &str = ".";
+pub const DEFAULT_UI_SCALE: u16 = 100;
+pub const UI_SCALES: [u16; 6] = [75, 90, DEFAULT_UI_SCALE, 110, 125, 150];
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
     pub language: LanguagePreference,
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: u16,
     pub repository: String,
     pub token: String,
     pub path: PathBuf,
@@ -32,6 +36,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             language: LanguagePreference::default(),
+            ui_scale: DEFAULT_UI_SCALE,
             repository: String::new(),
             token: String::new(),
             path: DEFAULT_REPO_PATH.into(),
@@ -95,8 +100,11 @@ impl Config {
 
     fn validate(&mut self, home: &Path, repository_required: bool) -> Result<(), SaveError> {
         self.flake_directory = relative_flake_directory(&self.flake_directory)?;
+        if !UI_SCALES.contains(&self.ui_scale) {
+            self.ui_scale = DEFAULT_UI_SCALE;
+        }
 
-        // Language can be saved before a repository is set up.
+        // Interface preferences can be saved before a repository is set up.
         if !repository_required
             && self.repository.is_empty()
             && self.token.is_empty()
@@ -123,6 +131,10 @@ impl Config {
         self.branch = branch.to_owned();
         Ok(())
     }
+}
+
+const fn default_ui_scale() -> u16 {
+    DEFAULT_UI_SCALE
 }
 
 fn default_flake_directory() -> PathBuf {

@@ -1,7 +1,7 @@
 use fluent_bundle::FluentArgs;
 use iced::{
-    Center, Color, Element, Fill, Font,
-    widget::{button, column, container, row, space, text},
+    Color, Element, Fill, Font,
+    widget::{button, column, container, row, text},
 };
 
 use super::{Message, State, selection};
@@ -22,7 +22,7 @@ pub fn view<'a>(i18n: &I18n, run: Option<&Run>, state: &'a State) -> Element<'a,
         "overview-show-journal"
     };
     let has_journal = state.has_journal();
-    let mut actions = row![
+    let controls = row![
         button(text(i18n.text(toggle)).size(13))
             .padding([5, 8])
             .style(buttons::secondary)
@@ -35,10 +35,11 @@ pub fn view<'a>(i18n: &I18n, run: Option<&Run>, state: &'a State) -> Element<'a,
             .padding([5, 8])
             .style(buttons::secondary)
             .on_press_maybe(has_journal.then_some(Message::ClearJournal)),
-        space().width(Fill),
     ]
-    .align_y(Center)
-    .spacing(spacing::MD);
+    .width(Fill)
+    .spacing(spacing::MD)
+    .wrap();
+    let mut actions = row![controls].spacing(spacing::MD);
     if let Some(run) = run.filter(|run| run.is_running()) {
         actions = actions.push(
             button(text(i18n.text("overview-rebuild-interrupt")).size(13))

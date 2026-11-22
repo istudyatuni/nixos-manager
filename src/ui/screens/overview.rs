@@ -1,7 +1,7 @@
 use fluent_bundle::FluentArgs;
 use iced::{
     Center, Color, Element, Fill, Font, Padding, Shrink,
-    widget::{button, column, container, row, scrollable, text, text_editor},
+    widget::{button, column, container, responsive, row, scrollable, text, text_editor},
 };
 use std::{borrow::Cow, path::Path};
 
@@ -19,6 +19,9 @@ pub use selection::State;
 
 const CARD_WIDTH: f32 = 560.0;
 const OUTPUT_WIDTH: f32 = CARD_WIDTH * 2.0;
+const COMPACT_WIDTH: f32 = 520.0;
+const COMPACT_HEIGHT: f32 = 400.0;
+const COMPACT_JOURNAL_HEIGHT: f32 = 224.0;
 
 impl Mode {
     fn label(self) -> &'static str {
@@ -77,10 +80,50 @@ pub fn view<'a>(
     mode: Mode,
     loading: bool,
     load_error: bool,
-    rebuild: Option<&rebuild::Run>,
+    rebuild: Option<&'a rebuild::Run>,
     state: &'a State,
 ) -> Element<'a, Message> {
-    let controls = match repository {
+    responsive(move |size| {
+        let compact = size.width < COMPACT_WIDTH || size.height < COMPACT_HEIGHT;
+        let controls = controls(i18n, repository.as_ref(), mode, loading, load_error, state);
+        let controls = container(controls).width(Fill).max_width(CARD_WIDTH);
+        let mut journal = container(journal::view(i18n, rebuild, state))
+            .width(Fill)
+            .max_width(OUTPUT_WIDTH);
+        if compact {
+            journal = journal.max_height(COMPACT_JOURNAL_HEIGHT);
+        }
+
+        let page = container(
+            column![controls, journal]
+                .width(Fill)
+                .spacing(spacing::LG)
+                .align_x(Center),
+        )
+        .padding(Padding {
+            bottom: spacing::LG,
+            ..spacing::PAGE_PADDING.into()
+        })
+        .width(Fill);
+
+        if compact {
+            scrollable(page).height(Fill).into()
+        } else {
+            page.height(Fill).into()
+        }
+    })
+    .into()
+}
+
+fn controls<'a>(
+    i18n: &I18n,
+    repository: Option<&Repository<'_>>,
+    mode: Mode,
+    loading: bool,
+    load_error: bool,
+    state: &'a State,
+) -> Element<'a, Message> {
+    match repository {
         Some(repository) => configured(i18n, repository, mode, state),
         None => {
             let prompt = if loading {
@@ -103,31 +146,12 @@ pub fn view<'a>(
 
             container(content).center_x(Fill).into()
         }
-    };
-
-    let controls = container(controls).width(Fill).max_width(CARD_WIDTH);
-    let journal = container(journal::view(i18n, rebuild, state))
-        .width(Fill)
-        .max_width(OUTPUT_WIDTH);
-    let page = column![controls, journal]
-        .width(Fill)
-        .height(Fill)
-        .spacing(spacing::LG)
-        .align_x(Center);
-
-    container(page)
-        .padding(Padding {
-            bottom: spacing::LG,
-            ..spacing::PAGE_PADDING.into()
-        })
-        .width(Fill)
-        .height(Fill)
-        .into()
+    }
 }
 
 fn configured<'a>(
     i18n: &I18n,
-    repository: Repository<'a>,
+    repository: &Repository<'_>,
     mode: Mode,
     state: &'a State,
 ) -> Element<'a, Message> {
