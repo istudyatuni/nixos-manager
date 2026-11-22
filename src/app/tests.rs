@@ -1,16 +1,20 @@
 use iced::{
-    Font, Pixels, Point, Rectangle, Renderer, Size,
+    Font, Pixels, Point, Rectangle, Renderer, Size, Vector,
     advanced::{
         Layout, Shell, clipboard, layout, mouse,
         renderer::Headless,
-        widget::{Id, Operation, Tree},
+        widget::{Id, Operation, Tree, operation::Scrollable},
     },
 };
 
 use super::*;
 
 #[derive(Default)]
-struct Labels(Vec<(String, Rectangle)>, Vec<Rectangle>);
+struct Labels {
+    text: Vec<(String, Rectangle)>,
+    inputs: Vec<Rectangle>,
+    scroll_viewport: Option<(Rectangle, Vector)>,
+}
 
 impl Operation for Labels {
     fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
@@ -18,7 +22,7 @@ impl Operation for Labels {
     }
 
     fn text(&mut self, _id: Option<&Id>, bounds: Rectangle, label: &str) {
-        self.0.push((label.to_owned(), bounds));
+        self.text.push((label.to_owned(), bounds));
     }
 
     fn text_input(
@@ -27,20 +31,31 @@ impl Operation for Labels {
         bounds: Rectangle,
         _state: &mut dyn iced::advanced::widget::operation::TextInput,
     ) {
-        self.1.push(bounds);
+        self.inputs.push(bounds);
+    }
+
+    fn scrollable(
+        &mut self,
+        _id: Option<&Id>,
+        bounds: Rectangle,
+        _content_bounds: Rectangle,
+        translation: Vector,
+        _state: &mut dyn Scrollable,
+    ) {
+        self.scroll_viewport = Some((bounds, translation));
     }
 }
 
 impl Labels {
     fn bounds(&self, label: &str) -> Rectangle {
-        self.0
+        self.text
             .iter()
             .find_map(|(text, bounds)| (text == label).then_some(*bounds))
             .unwrap_or_else(|| panic!("Missing label {label:?}"))
     }
 
     fn contains(&self, fragment: &str) -> bool {
-        self.0.iter().any(|(label, _)| label.contains(fragment))
+        self.text.iter().any(|(label, _)| label.contains(fragment))
     }
 }
 
@@ -151,7 +166,7 @@ async fn settings_request_remote_branches_when_the_branch_picker_opens() {
         let (mut tree, node, labels) = layout(&mut view, &renderer, size);
         let branch_label = labels.bounds("Branch");
         let branch_input = labels
-            .1
+            .inputs
             .iter()
             .find(|bounds| bounds.y > branch_label.y)
             .unwrap();
@@ -206,7 +221,7 @@ async fn settings_request_remote_branches_when_the_branch_picker_opens() {
 }
 
 #[tokio::test]
-async fn cache_settings_show_the_expiration_in_the_interface_language() {
+async fn cache_settings_show_the_expiration_and_actions_in_order() {
     let metadata = attic::Metadata {
         cache_name: "main".into(),
         cache_expiration: "2026-02-07T14:30:45Z".parse().unwrap(),
@@ -216,22 +231,93 @@ async fn cache_settings_show_the_expiration_in_the_interface_language() {
     let mut app = boot_with_cache(Ok(Some(metadata.clone())));
     app.screen = Screen::CacheSettings(Box::new(cache_settings::State::new(Some(&metadata), true)));
     let renderer = headless().await;
-    let size = Size::new(800.0, 540.0);
+    let size = Size::new(800.0, 1000.0);
     for (language, expected) in [
         (LanguagePreference::English, "2/7/2026, 2:30:45 PM UTC"),
         (LanguagePreference::Russian, "07.02.2026, 14:30:45 UTC"),
     ] {
         app.set_language(language);
-        assert!(
-            layout(&mut app.view(), &renderer, size)
-                .2
-                .contains(expected)
-        );
+        let labels = layout(&mut app.view(), &renderer, size).2;
+        let expiration = labels
+            .text
+            .iter()
+            .find(|(label, _)| label.contains(expected))
+            .unwrap()
+            .1;
+        let update = labels.bounds(&app.i18n.text("cache-settings-update"));
+        let changes = labels.bounds(&app.i18n.text("cache-settings-config-changes"));
+        let forget = app.i18n.text("cache-settings-forget");
+        let forget_button = labels
+            .text
+            .iter()
+            .rfind(|(label, _)| label == &forget)
+            .unwrap()
+            .1;
+        let positions = [
+            expiration,
+            labels.bounds(&app.i18n.text("cache-settings-config-details")),
+            update,
+            labels.bounds(&forget),
+            labels.bounds(&app.i18n.text("cache-settings-forget-hint")),
+            labels.bounds(&app.i18n.text("cache-settings-files")),
+            forget_button,
+        ];
+        assert!(positions.windows(2).all(|pair| pair[0].y < pair[1].y));
+        assert!(changes.x + changes.width <= update.x);
+        assert!((changes.center_y() - update.center_y()).abs() < 1.0);
+        assert!(update.center().x > size.width / 2.0);
+        assert!((forget_button.x + forget_button.width - (update.x + update.width)).abs() < 1.0);
+        assert!(labels.contains("×"));
     }
 }
 
 #[tokio::test]
-async fn compact_cache_settings_keep_connection_errors_and_actions_in_view() {
+async fn cache_settings_offer_the_guide_when_no_cache_is_saved() {
+    let mut app = boot_with_cache(Ok(None));
+    app.screen = Screen::CacheSettings(Box::new(cache_settings::State::new(None, true)));
+    let renderer = headless().await;
+    let size = Size::new(800.0, 1000.0);
+    let messages = {
+        let mut view = app.view();
+        let (mut tree, node, labels) = layout(&mut view, &renderer, size);
+        let files = labels.bounds(&app.i18n.text("cache-settings-files"));
+        let forget = app.i18n.text("cache-settings-forget");
+        let forget_button = labels
+            .text
+            .iter()
+            .rfind(|(label, _)| label == &forget)
+            .unwrap()
+            .1;
+        let link = Point::new(files.x + 12.0, forget_button.center_y());
+        assert!(link.x < forget_button.x && link.y > files.y + files.height);
+        let mut messages = Vec::new();
+        for point in [link, forget_button.center()] {
+            for event in [
+                mouse::Event::ButtonPressed(mouse::Button::Left),
+                mouse::Event::ButtonReleased(mouse::Button::Left),
+            ] {
+                view.as_widget_mut().update(
+                    &mut tree,
+                    &Event::Mouse(event),
+                    Layout::new(&node),
+                    mouse::Cursor::Available(point),
+                    &renderer,
+                    &mut clipboard::Null,
+                    &mut Shell::new(&mut messages),
+                    &Rectangle::with_size(size),
+                );
+            }
+        }
+        messages
+    };
+    assert!(matches!(
+        messages.as_slice(),
+        [Message::CacheSettings(cache_settings::Message::OpenGuide)]
+    ));
+}
+
+#[tokio::test]
+async fn compact_cache_settings_can_scroll_to_connection_errors() {
     use attic::tests::{NOW, fixed_time, jwt};
     use cache_settings::Message as CacheMessage;
 
@@ -264,16 +350,37 @@ async fn compact_cache_settings_keep_connection_errors_and_actions_in_view() {
     );
     app.screen = Screen::CacheSettings(Box::new(state));
 
-    let labels = layout(&mut app.view(), &renderer, size).2;
-    for key in [
-        "cache-settings-error-config",
-        "cache-settings-partial",
-        "cache-settings-connect",
-    ] {
+    let mut view = app.view();
+    let (mut tree, node, labels) = layout(&mut view, &renderer, size);
+    let (viewport, _) = labels.scroll_viewport.unwrap();
+    let button = labels.bounds(&app.i18n.text("cache-settings-connect"));
+    let error = labels.bounds(&app.i18n.text("cache-settings-error-config"));
+    assert!(button.y + button.height <= error.y);
+    let scroll = error.y - viewport.y - 4.0;
+    let mut messages = Vec::new();
+    view.as_widget_mut().update(
+        &mut tree,
+        &Event::Mouse(mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Pixels { x: 0.0, y: -scroll },
+        }),
+        Layout::new(&node),
+        mouse::Cursor::Available(viewport.center()),
+        &renderer,
+        &mut clipboard::Null,
+        &mut Shell::new(&mut messages),
+        &Rectangle::with_size(size),
+    );
+    let mut labels = Labels::default();
+    view.as_widget_mut()
+        .operate(&mut tree, Layout::new(&node), &renderer, &mut labels);
+    let (_, translation) = labels.scroll_viewport.unwrap();
+    assert!(translation.y > 0.0);
+    for key in ["cache-settings-error-config", "cache-settings-partial"] {
         let bounds = labels.bounds(&app.i18n.text(key));
         assert!(
-            bounds.y >= 0.0 && bounds.y + bounds.height <= size.height,
-            "{key}: {bounds:?}"
+            bounds.y - translation.y >= viewport.y
+                && bounds.y + bounds.height - translation.y <= viewport.y + viewport.height,
+            "{key}: {bounds:?}, viewport {viewport:?}, scroll {translation:?}"
         );
     }
 }

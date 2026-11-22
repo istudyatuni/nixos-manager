@@ -1,7 +1,10 @@
 use fluent_bundle::FluentArgs;
 use iced::{
     Center, Color, Element, Fill,
-    widget::{Column, Text, button, column, pick_list, row, scrollable, space, text, text_input},
+    widget::{
+        Column, Text, button, column, pick_list, rich_text, row, scrollable, space, span, text,
+        text_input,
+    },
 };
 
 use crate::{
@@ -47,21 +50,10 @@ impl State {
         if saved.is_err() {
             body = body.push(note(i18n, "cache-settings-load-error", colors::WARNING));
         }
-        let mut submit = None;
-        if self.cli_available {
+        let can_connect = if self.cli_available {
             let (form, can_connect) = self.form(i18n, metadata);
             body = body.push(form);
-            let label = if metadata.is_some() {
-                "cache-settings-update"
-            } else {
-                "cache-settings-connect"
-            };
-            submit = Some(
-                button(text(i18n.text(label)))
-                    .padding([7, 12])
-                    .style(buttons::primary)
-                    .on_press_maybe(can_connect.then_some(Message::Connect)),
-            );
+            Some(can_connect)
         } else {
             body = body.push(note(i18n, "cache-settings-missing-cli", colors::WARNING));
             if let Some(metadata) = metadata {
@@ -72,78 +64,94 @@ impl State {
                 body =
                     body.push(text(i18n.with_args("cache-settings-stored-cache", &args)).size(14));
             }
-        }
+            None
+        };
         if let Some(metadata) = metadata {
             let mut args = FluentArgs::new();
             args.set("timestamp", metadata.cache_expiration.timestamp());
             body = body.push(text(i18n.with_args("cache-settings-expiration", &args)).size(14));
         }
-        if self.cli_available {
-            body = body.push(note(
-                i18n,
-                "cache-settings-config-details",
-                colors::TEXT_MUTED,
-            ));
+        if let Some(can_connect) = can_connect {
+            body = body.push(self.connection_actions(i18n, metadata.is_some(), can_connect));
         }
-        if !matches!(saved, Ok(None)) {
-            body = body.push(
-                column![
-                    note(i18n, "cache-settings-forget-hint", colors::TEXT_MUTED),
-                    button(text(i18n.text("cache-settings-forget")).size(14))
-                        .padding([7, 12])
-                        .style(buttons::danger)
-                        .on_press_maybe((!self.busy()).then_some(Message::Forget)),
-                ]
-                .spacing(spacing::MD),
-            );
-        }
-        body = body.push(
-            column![
-                note(i18n, "cache-settings-files", colors::TEXT_MUTED),
-                button(text(i18n.text("cache-settings-guide")).size(14))
-                    .padding([7, 12])
-                    .style(buttons::secondary)
-                    .on_press_maybe((!self.busy()).then_some(Message::OpenGuide)),
-            ]
-            .spacing(spacing::MD),
-        );
-        if self.guide_failed {
-            let mut args = FluentArgs::new();
-            args.set("url", GUIDE_URL);
-            body = body.push(
-                text(i18n.with_args("cache-settings-guide-error", &args))
-                    .size(13)
-                    .color(colors::WARNING),
-            );
-        }
+        body = body.push(self.forget_section(i18n, !matches!(saved, Ok(None))));
 
-        let actions = row![
-            button(text(i18n.text("cache-settings-close")))
-                .padding([7, 12])
-                .style(buttons::secondary)
-                .on_press(Message::Close),
-            space().width(Fill),
-        ]
-        .push(submit)
-        .spacing(spacing::LG);
-        let footer = column![]
-            .push(self.status_view(i18n))
-            .push(
-                self.cli_available
-                    .then(|| note(i18n, "cache-settings-config-changes", colors::TEXT_MUTED)),
-            )
-            .push(actions)
-            .spacing(spacing::MD);
         column![
             header,
             scrollable(body)
                 .width(Fill)
                 .height(Fill)
                 .spacing(spacing::MD),
-            footer,
         ]
         .spacing(spacing::XL)
         .into()
+    }
+
+    fn connection_actions<'a>(
+        &self,
+        i18n: &I18n,
+        updating: bool,
+        can_connect: bool,
+    ) -> Column<'a, Message> {
+        let label = if updating {
+            "cache-settings-update"
+        } else {
+            "cache-settings-connect"
+        };
+        column![
+            note(i18n, "cache-settings-config-details", colors::TEXT_MUTED),
+            row![
+                note(i18n, "cache-settings-config-changes", colors::TEXT_MUTED).width(Fill),
+                button(text(i18n.text(label)))
+                    .padding([7, 12])
+                    .style(buttons::primary)
+                    .on_press_maybe(can_connect.then_some(Message::Connect)),
+            ]
+            .align_y(Center)
+            .spacing(spacing::LG),
+        ]
+        .push(self.connection_status(i18n))
+        .spacing(spacing::MD)
+    }
+
+    fn forget_section<'a>(&self, i18n: &I18n, has_settings: bool) -> Column<'a, Message> {
+        let idle = !self.busy();
+        let guide = rich_text([span(i18n.text("cache-settings-guide"))
+            .color(if idle {
+                colors::PRIMARY
+            } else {
+                colors::TEXT_MUTED
+            })
+            .underline(true)
+            .link_maybe(idle.then_some(()))])
+        .size(14)
+        .width(Fill)
+        .on_link_click(|()| Message::OpenGuide);
+        let guide_error = self.guide_failed.then(|| {
+            let mut args = FluentArgs::new();
+            args.set("url", GUIDE_URL);
+            text(i18n.with_args("cache-settings-guide-error", &args))
+                .size(13)
+                .color(colors::WARNING)
+        });
+        let forget_label = i18n.text("cache-settings-forget");
+        column![
+            text(forget_label.clone()).size(17),
+            note(i18n, "cache-settings-forget-hint", colors::TEXT_MUTED),
+            note(i18n, "cache-settings-files", colors::TEXT_MUTED),
+            row![
+                guide,
+                button(text(forget_label).size(14))
+                    .padding([7, 12])
+                    .style(buttons::danger)
+                    .on_press_maybe((idle && has_settings).then_some(Message::Forget)),
+            ]
+            .align_y(Center)
+            .spacing(spacing::LG),
+        ]
+        .push(guide_error)
+        .push(self.forget_status(i18n))
+        .spacing(spacing::MD)
     }
 
     fn form<'a>(&'a self, i18n: &I18n, saved: Option<&Metadata>) -> (Column<'a, Message>, bool) {
@@ -259,17 +267,20 @@ impl State {
         (fields, can_connect)
     }
 
-    fn status_view<'a>(&self, i18n: &I18n) -> Option<Column<'a, Message>> {
+    fn forget_status<'a>(&self, i18n: &I18n) -> Option<Text<'a>> {
         let (key, color) = match self.status {
-            Status::Idle => return None,
-            Status::Connecting => ("cache-settings-connecting", colors::INFO),
             Status::Forgetting => ("cache-settings-forgetting", colors::INFO),
-            Status::Connected => ("cache-settings-connected", colors::SUCCESS),
             Status::Forgotten => ("cache-settings-forgotten", colors::SUCCESS),
             Status::ForgetFailed => ("cache-settings-error-forget", colors::DANGER),
-            Status::Invalid(
-                ValidationError::Url | ValidationError::ServerName | ValidationError::Token(_),
-            ) => return None,
+            _ => return None,
+        };
+        Some(note(i18n, key, color))
+    }
+
+    fn connection_status<'a>(&self, i18n: &I18n) -> Option<Column<'a, Message>> {
+        let (key, color) = match self.status {
+            Status::Connecting => ("cache-settings-connecting", colors::INFO),
+            Status::Connected => ("cache-settings-connected", colors::SUCCESS),
             Status::Invalid(ValidationError::CacheName) => {
                 ("cache-settings-error-cache", colors::DANGER)
             }
@@ -297,6 +308,7 @@ impl State {
                         .spacing(spacing::SM),
                 );
             }
+            _ => return None,
         };
         Some(column![note(i18n, key, color)])
     }
