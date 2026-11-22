@@ -31,6 +31,7 @@ pub enum Message {
 }
 
 pub struct State {
+    original: Box<Config>,
     draft: Config,
     error: Option<SaveError>,
     saving: bool,
@@ -41,6 +42,7 @@ impl State {
         let mut draft = config.cloned().unwrap_or_default();
         draft.path = display_repo_path(&draft.path, home).into_owned();
         Self {
+            original: Box::new(draft.clone()),
             draft,
             error: None,
             saving: false,
@@ -60,8 +62,12 @@ impl State {
         self.error = Some(error);
     }
 
-    pub fn update(&mut self, message: Message, can_save: bool) -> Option<Config> {
-        if self.saving || (!can_save && matches!(message, Message::Save)) {
+    fn can_save(&self, operation_idle: bool) -> bool {
+        operation_idle && !self.saving && self.draft != *self.original
+    }
+
+    pub fn update(&mut self, message: Message, operation_idle: bool) -> Option<Config> {
+        if self.saving || (matches!(message, Message::Save) && !self.can_save(operation_idle)) {
             return None;
         }
 
@@ -82,8 +88,9 @@ impl State {
         None
     }
 
-    pub fn view<'a>(&'a self, i18n: &'a I18n, can_save: bool) -> Element<'a, Message> {
+    pub fn view<'a>(&'a self, i18n: &'a I18n, operation_idle: bool) -> Element<'a, Message> {
         let editing = !self.saving;
+        let submit = self.can_save(operation_idle).then_some(Message::Save);
         let repository = text_input(
             &i18n.text("settings-repository-placeholder"),
             &self.draft.repository,
@@ -104,13 +111,13 @@ impl State {
             &self.draft.branch,
         )
         .on_input_maybe(editing.then_some(Message::BranchChanged))
-        .on_submit_maybe((editing && can_save).then_some(Message::Save));
+        .on_submit_maybe(submit.clone());
         let flake_directory = text_input(
             DEFAULT_FLAKE_DIRECTORY,
             &self.draft.flake_directory.to_string_lossy(),
         )
         .on_input_maybe(editing.then_some(Message::FlakeDirectoryChanged))
-        .on_submit_maybe((editing && can_save).then_some(Message::Save));
+        .on_submit_maybe(submit.clone());
 
         let interface = column![
             text(i18n.text("settings-interface-section")).size(18),
@@ -141,7 +148,7 @@ impl State {
         if let Some(error) = self.error {
             form = form.push(text(error_text(i18n, error)).size(14).color(colors::DANGER));
         }
-        if !can_save {
+        if !operation_idle {
             form = form.push(
                 text(i18n.text("settings-operation-in-progress"))
                     .size(14)
@@ -157,7 +164,7 @@ impl State {
         let save = button(text(i18n.text(save_label)))
             .padding([7, 12])
             .style(buttons::primary)
-            .on_press_maybe((editing && can_save).then_some(Message::Save));
+            .on_press_maybe(submit);
         form = form.push(container(save).align_right(Fill));
 
         let form = container(form).width(Fill).max_width(488);

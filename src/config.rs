@@ -18,7 +18,7 @@ pub const DEFAULT_FLAKE_DIRECTORY: &str = ".";
 pub const DEFAULT_UI_SCALE: u16 = 100;
 pub const UI_SCALES: [u16; 6] = [75, 90, DEFAULT_UI_SCALE, 110, 125, 150];
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, PartialEq, Eq, Serialize)]
 pub struct Config {
     #[serde(default)]
     pub language: LanguagePreference,
