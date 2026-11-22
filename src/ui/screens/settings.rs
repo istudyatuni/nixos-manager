@@ -42,6 +42,7 @@ pub enum Message {
 pub enum Action {
     None,
     LookupBranches,
+    PreviewLanguage(LanguagePreference),
     Save(Config),
 }
 
@@ -256,7 +257,10 @@ impl State {
         self.error = None;
         self.save_after_lookup = false;
         match message {
-            Message::LanguageChanged(value) => self.draft.language = value,
+            Message::LanguageChanged(value) => {
+                self.draft.language = value;
+                return Action::PreviewLanguage(value);
+            }
             Message::ScaleChanged(value) => self.draft.ui_scale = value,
             Message::RepositoryChanged(value) => {
                 let repository = github_repository(value.trim());

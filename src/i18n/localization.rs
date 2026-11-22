@@ -21,12 +21,14 @@ impl I18n {
         }
     }
 
-    pub fn set_language(&mut self, preference: LanguagePreference) {
+    pub fn set_language(&mut self, preference: LanguagePreference) -> bool {
         let locale = preference.resolve();
-        if self.locale != locale {
-            self.active = (locale != Locale::English).then(|| load_bundle(locale));
-            self.locale = locale;
+        if self.locale == locale {
+            return false;
         }
+        self.active = (locale != Locale::English).then(|| load_bundle(locale));
+        self.locale = locale;
+        true
     }
 
     pub fn text(&self, key: &str) -> String {

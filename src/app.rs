@@ -13,7 +13,7 @@ use crate::{
     command_runner::{CommandRunner, LogLine},
     config::{self, Config, DEFAULT_UI_SCALE, LoadError, SaveError},
     git,
-    i18n::I18n,
+    i18n::{I18n, LanguagePreference},
     rebuild,
     ui::{
         screens::{Screen, overview, settings},
@@ -192,6 +192,8 @@ impl App {
             }
             Message::CloseSettings => {
                 if matches!(&self.screen, Screen::Settings(state) if !state.saving()) {
+                    let language = self.config.as_ref().map(|config| config.language);
+                    self.set_language(language.unwrap_or_default());
                     self.screen = Screen::Overview;
                     return self.inspect_repository();
                 }
@@ -325,6 +327,7 @@ impl App {
                         settings::Action::LookupBranches => {
                             return self.lookup_settings_branches(true);
                         }
+                        settings::Action::PreviewLanguage(language) => self.set_language(language),
                         settings::Action::Save(draft) => return self.save_settings(draft),
                     }
                 }
@@ -385,6 +388,14 @@ impl App {
             Message::OpenSettings => {}
         }
         Task::none()
+    }
+
+    fn set_language(&mut self, language: LanguagePreference) {
+        if self.i18n.set_language(language) {
+            self.overview.set_download_error(&self.i18n, &self.download);
+            self.overview
+                .set_rebuild_error(&self.i18n, self.rebuild.as_ref());
+        }
     }
 
     fn is_busy(&self) -> bool {
