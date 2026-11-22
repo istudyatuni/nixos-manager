@@ -10,7 +10,7 @@ use rustix::{
     termios::{LocalModes, OptionalActions, SpecialCodeIndex, tcgetattr, tcsetattr},
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, BufReader},
+    io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
     net::unix::pipe,
     process::{Child, Command},
     sync::mpsc,
@@ -37,6 +37,24 @@ pub enum RunError {
     Launch,
     Wait,
     Interrupted,
+}
+
+pub struct RunningCommand {
+    terminal: File,
+    child: Child,
+    output: BufReader<pipe::Receiver>,
+    interrupted: bool,
+}
+
+impl RunningCommand {
+    pub async fn send(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::BrokenPipe))?
+            .write_all(bytes)
+            .await
+    }
 }
 
 impl CommandRunner {
@@ -84,7 +102,7 @@ impl CommandRunner {
             .await;
     }
 
-    async fn log_command(&self, command: &Command) {
+    pub async fn log_command(&self, command: &Command) {
         let command = command.as_std();
         let mut line = String::from(COMMAND_PROMPT);
         for (index, word) in std::iter::once(command.get_program())
@@ -125,14 +143,14 @@ impl CommandRunner {
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()?;
-        let stdout = child.stdout.take().expect("piped stdout");
-        let stderr = child.stderr.take().expect("piped stderr");
+        let mut stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
+        let mut stderr = BufReader::new(child.stderr.take().expect("piped stderr"));
         let mut out = Vec::new();
         let mut err = Vec::new();
-        let (status, (), ()) = tokio::try_join!(
+        let (status, _, _) = tokio::try_join!(
             child.wait(),
-            self.read_output(stdout, Some(&mut out)),
-            self.read_output(stderr, Some(&mut err)),
+            self.read_output(&mut stdout, Some(&mut out), None),
+            self.read_output(&mut stderr, Some(&mut err), None),
         )?;
         Ok(Output {
             status,
@@ -143,10 +161,20 @@ impl CommandRunner {
 
     pub async fn interruptible<F: Future<Output = ()> + Send>(
         &self,
+        mut command: Command,
+        interrupt: &mut mpsc::Receiver<()>,
+        interrupt_failed: impl FnMut() -> F + Send,
+    ) -> Result<ExitStatus, RunError> {
+        command.stdin(Stdio::null());
+        let process = self.start_interruptible(command, interrupt).await?;
+        self.finish(process, interrupt, interrupt_failed).await
+    }
+
+    pub async fn start_interruptible(
+        &self,
         command: Command,
         interrupt: &mut mpsc::Receiver<()>,
-        mut interrupt_failed: impl FnMut() -> F + Send,
-    ) -> Result<ExitStatus, RunError> {
+    ) -> Result<RunningCommand, RunError> {
         if interrupt.try_recv().is_ok() {
             return Err(RunError::Interrupted);
         }
@@ -154,33 +182,76 @@ impl CommandRunner {
         if interrupt.try_recv().is_ok() {
             return Err(RunError::Interrupted);
         }
-        let (mut terminal, mut child, output) = match spawn_interruptible(command) {
-            Ok(process) => process,
+        match spawn_interruptible(command) {
+            Ok(process) => Ok(process),
             Err(error) => {
                 self.log(self.redact(&error.to_string())).await;
-                return Err(RunError::Launch);
+                Err(RunError::Launch)
             }
-        };
+        }
+    }
 
+    pub async fn wait_for_marker<F: Future<Output = ()> + Send>(
+        &self,
+        process: &mut RunningCommand,
+        marker: &[u8],
+        interrupt: &mut mpsc::Receiver<()>,
+        mut interrupt_failed: impl FnMut() -> F + Send,
+    ) -> Result<bool, RunError> {
+        let read = self.read_output(&mut process.output, None, Some(marker));
+        tokio::pin!(read);
+        loop {
+            tokio::select! {
+                biased;
+                Some(()) = interrupt.recv() => {
+                    if self.signal_interrupt(&mut process.terminal).await {
+                        process.interrupted = true;
+                        return Err(RunError::Interrupted);
+                    }
+                    interrupt_failed().await;
+                }
+                result = &mut read => {
+                    return match result {
+                        Ok(found) => Ok(found),
+                        Err(error) => {
+                            self.log(self.redact(&error.to_string())).await;
+                            Err(RunError::Wait)
+                        }
+                    };
+                }
+            }
+        }
+    }
+
+    pub async fn finish<F: Future<Output = ()> + Send>(
+        &self,
+        process: RunningCommand,
+        interrupt: &mut mpsc::Receiver<()>,
+        mut interrupt_failed: impl FnMut() -> F + Send,
+    ) -> Result<ExitStatus, RunError> {
+        let RunningCommand {
+            mut terminal,
+            mut child,
+            mut output,
+            interrupted,
+        } = process;
+        drop(child.stdin.take());
         let wait = async {
-            let mut interrupt_sent = false;
+            let mut interrupt_sent = interrupted;
             loop {
                 tokio::select! {
                     result = child.wait() => break (result, interrupt_sent),
                     Some(()) = interrupt.recv(), if !interrupt_sent => {
-                        match terminal.write_all(&[INTERRUPT_CHAR]) {
-                            Ok(()) => interrupt_sent = true,
-                            Err(error) => {
-                                self.log(self.redact(&error.to_string())).await;
-                                interrupt_failed().await;
-                            }
+                        interrupt_sent = self.signal_interrupt(&mut terminal).await;
+                        if !interrupt_sent {
+                            interrupt_failed().await;
                         }
                     }
                 }
             }
         };
         let read = async {
-            if let Err(error) = self.read_output(output, None).await {
+            if let Err(error) = self.read_output(&mut output, None, None).await {
                 self.log(self.redact(&error.to_string())).await;
             }
         };
@@ -195,12 +266,22 @@ impl CommandRunner {
         }
     }
 
+    async fn signal_interrupt(&self, terminal: &mut File) -> bool {
+        match terminal.write_all(&[INTERRUPT_CHAR]) {
+            Ok(()) => true,
+            Err(error) => {
+                self.log(self.redact(&error.to_string())).await;
+                false
+            }
+        }
+    }
+
     async fn read_output(
         &self,
-        reader: impl AsyncRead + Unpin,
+        reader: &mut BufReader<impl AsyncRead + Unpin>,
         mut capture: Option<&mut Vec<u8>>,
-    ) -> io::Result<()> {
-        let mut reader = BufReader::new(reader);
+        marker: Option<&[u8]>,
+    ) -> io::Result<bool> {
         let mut line = Vec::new();
         let mut after_cr = false;
         loop {
@@ -222,6 +303,9 @@ impl CommandRunner {
 
             // Git reports progress with carriage returns. Treat CRLF as one newline.
             if ending.is_some() && !(after_cr && line.is_empty() && ending == Some(b'\n')) {
+                if marker == Some(line.as_slice()) {
+                    return Ok(true);
+                }
                 self.log_output_line(&line).await;
                 line.clear();
             }
@@ -230,7 +314,7 @@ impl CommandRunner {
         if !line.is_empty() {
             self.log_output_line(&line).await;
         }
-        Ok(())
+        Ok(false)
     }
 
     async fn log_output_line(&self, bytes: &[u8]) {
@@ -240,17 +324,18 @@ impl CommandRunner {
     }
 }
 
-fn spawn_interruptible(mut command: Command) -> io::Result<(File, Child, pipe::Receiver)> {
+fn spawn_interruptible(mut command: Command) -> io::Result<RunningCommand> {
     let terminal = attach_terminal(&mut command)?;
     // A shared pipe preserves write order across stdout and stderr.
     let (reader, writer) = io::pipe()?;
     let output = pipe::Receiver::from_owned_fd(reader.into())?;
-    let child = command
-        .stdin(Stdio::null())
-        .stdout(writer.try_clone()?)
-        .stderr(writer)
-        .spawn()?;
-    Ok((terminal, child, output))
+    let child = command.stdout(writer.try_clone()?).stderr(writer).spawn()?;
+    Ok(RunningCommand {
+        terminal,
+        child,
+        output: BufReader::new(output),
+        interrupted: false,
+    })
 }
 
 fn attach_terminal(command: &mut Command) -> io::Result<File> {

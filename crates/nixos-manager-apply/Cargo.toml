@@ -1,0 +1,9 @@
+[package]
+name = "nixos-manager-apply"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+nixos-manager-apply-protocol.workspace = true
+signal-hook.workspace = true

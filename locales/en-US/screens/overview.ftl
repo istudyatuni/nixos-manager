@@ -28,6 +28,7 @@ overview-download-revision = Could not verify that the selected branch matches t
 overview-rebuild-tool-unavailable = System updates require an executable at { $program }.
 overview-rebuild-requires-revision = Download the selected branch before updating the system.
 overview-rebuild-step-inspect = Checking the repository
+overview-rebuild-step-authorize = Requesting permission to apply the configuration
 overview-rebuild-step-build = Building the configuration
 overview-rebuild-step-register = Registering the system generation
 overview-rebuild-step-boot = Updating the bootloader

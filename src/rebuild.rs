@@ -5,6 +5,7 @@ use std::{
     sync::Arc,
 };
 
+use nixos_manager_apply_protocol::{Mode, NIX_ENV, STORE, SWITCH};
 use rustix::fs::{Access, access};
 use tempfile::TempDir;
 use tokio::{fs, process::Command, sync::mpsc};
@@ -18,11 +19,9 @@ use crate::{
 
 const PKEXEC: &str = "/run/wrappers/bin/pkexec";
 const NIX: &str = "/run/current-system/sw/bin/nix";
-const NIX_ENV: &str = "/run/current-system/sw/bin/nix-env";
-const SYSTEM_PROFILE: &str = "/nix/var/nix/profiles/system";
-const STORE: &str = "/nix/store";
 const OUT_LINK: &str = "result";
-const SWITCH: &str = "bin/switch-to-configuration";
+
+mod apply;
 
 #[derive(Clone, Copy)]
 pub struct Steps {
@@ -43,12 +42,22 @@ impl Steps {
     pub fn applies(self) -> bool {
         self.boot || self.activate
     }
+
+    fn apply_mode(self) -> Option<Mode> {
+        match (self.boot, self.activate) {
+            (false, false) => None,
+            (true, false) => Some(Mode::Boot),
+            (false, true) => Some(Mode::Activate),
+            (true, true) => Some(Mode::BootAndActivate),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
 pub struct Tools {
     nix: bool,
     pkexec: bool,
+    apply_helper: bool,
     nix_env: bool,
 }
 
@@ -57,6 +66,7 @@ impl Tools {
         Self {
             nix: executable(Path::new(NIX)),
             pkexec: executable(Path::new(PKEXEC)),
+            apply_helper: apply::helper_path().is_some(),
             nix_env: executable(Path::new(NIX_ENV)),
         }
     }
@@ -65,6 +75,7 @@ impl Tools {
         [
             (needs_build && !self.nix, NIX),
             (steps.applies() && !self.pkexec, PKEXEC),
+            (steps.applies() && !self.apply_helper, apply::HELPER_NAME),
             (steps.boot && !self.nix_env, NIX_ENV),
         ]
         .into_iter()
@@ -108,6 +119,7 @@ impl Build {
 #[derive(Clone, Copy)]
 pub enum Step {
     Inspect,
+    Authorize,
     Build,
     Register,
     Boot,
@@ -189,101 +201,110 @@ pub async fn run<F: Future<Output = ()> + Send>(
         return Err(Error::Unsynced);
     }
 
-    let build = if let Some(build) = cached {
+    let source = if let Some(build) = cached {
         if !build.matches(&status) {
             return Err(Error::BuildOutdated);
         }
         if Build::result_path(&build.directory).await.as_ref() != Some(&build.path) {
             return Err(Error::BuildResult);
         }
-        build
+        BuildSource::Cached(build)
     } else {
-        emit(Event::Started(Step::Build)).await;
         let head = status.clean_head();
         let selector = system_selector(config, head).await?;
-        // The result link keeps the store path alive for subsequent Apply actions.
-        let directory = tempfile::Builder::new()
-            .prefix("nixos-manager-build-")
-            .tempdir()
-            .map_err(|_| Error::BuildDirectory)?;
-        let mut command = Command::new(NIX);
-        command
-            .args([
-                "--extra-experimental-features",
-                "nix-command flakes",
-                "build",
-                "-L",
-                "--no-write-lock-file",
-                "--out-link",
-            ])
-            .arg(directory.path().join(OUT_LINK))
-            .arg(selector);
-        execute(runner, command, false, &mut interrupt, &mut emit).await?;
-        let path = Build::result_path(&directory)
+        BuildSource::Worktree { selector, head }
+    };
+
+    let Some(mode) = steps.apply_mode() else {
+        return build(runner, source, &mut interrupt, &mut emit)
             .await
-            .ok_or(Error::BuildResult)?;
-        let build = Arc::new(Build {
-            head: head.map(str::to_owned),
-            directory,
-            path,
-        });
-        if head.is_some() {
-            emit(Event::Built(Arc::clone(&build))).await;
+            .map(drop);
+    };
+    let helper = apply::authorize(runner, mode, &mut interrupt, &mut emit).await?;
+    match build(runner, source, &mut interrupt, &mut emit).await {
+        Ok(build) => {
+            apply::apply(runner, helper, mode, &build.path, &mut interrupt, &mut emit).await
         }
-        build
-    };
-
-    if steps.boot {
-        emit(Event::Started(Step::Register)).await;
-        let mut command = privileged(NIX_ENV);
-        command
-            .args(["--profile", SYSTEM_PROFILE, "--set"])
-            .arg(&build.path);
-        execute(runner, command, true, &mut interrupt, &mut emit).await?;
+        Err(error) => {
+            // Closing the helper's input without a build result makes it exit.
+            let _ = runner
+                .finish(helper, &mut interrupt, || emit(Event::InterruptFailed))
+                .await;
+            Err(error)
+        }
     }
-    let (step, mode) = match (steps.boot, steps.activate) {
-        (false, false) => return Ok(()),
-        (true, false) => (Step::Boot, "boot"),
-        (false, true) => (Step::Activate, "test"),
-        (true, true) => (Step::BootAndActivate, "switch"),
-    };
-    emit(Event::Started(step)).await;
-    let mut command = privileged(build.path.join(SWITCH));
-    command.arg(mode);
-    execute(runner, command, true, &mut interrupt, &mut emit).await
 }
 
-fn privileged(program: impl AsRef<OsStr>) -> Command {
-    let mut command = Command::new(PKEXEC);
-    command
-        // pkexec validates an inherited SHELL against /etc/shells.
-        .env_remove("SHELL")
-        .arg("--disable-internal-agent")
-        .arg(program);
-    command
+enum BuildSource<'a> {
+    Cached(Arc<Build>),
+    Worktree {
+        selector: OsString,
+        head: Option<&'a str>,
+    },
 }
 
-async fn execute<F: Future<Output = ()> + Send>(
+async fn build<F: Future<Output = ()> + Send>(
     runner: &CommandRunner,
-    command: Command,
-    privileged: bool,
+    source: BuildSource<'_>,
     interrupt: &mut mpsc::Receiver<()>,
     emit: &mut (impl FnMut(Event) -> F + Send),
-) -> Result<(), Error> {
-    match runner
+) -> Result<Arc<Build>, Error> {
+    let (selector, head) = match source {
+        BuildSource::Cached(build) => return Ok(build),
+        BuildSource::Worktree { selector, head } => (selector, head),
+    };
+    emit(Event::Started(Step::Build)).await;
+    // The result link keeps the store path alive for subsequent Apply actions.
+    let directory = tempfile::Builder::new()
+        .prefix("nixos-manager-build-")
+        .tempdir()
+        .map_err(|_| Error::BuildDirectory)?;
+    let mut command = Command::new(NIX);
+    command
+        .args([
+            "--extra-experimental-features",
+            "nix-command flakes",
+            "build",
+            "-L",
+            "--no-write-lock-file",
+            "--out-link",
+        ])
+        .arg(directory.path().join(OUT_LINK))
+        .arg(selector);
+    let status = runner
         .interruptible(command, interrupt, || emit(Event::InterruptFailed))
+        .await?;
+    check_status(status)?;
+
+    let path = Build::result_path(&directory)
         .await
-    {
-        Ok(status) => match status.code() {
-            Some(0) => Ok(()),
-            Some(126) if privileged => Err(Error::Cancelled),
-            Some(127) if privileged => Err(Error::AuthorizationFailed),
-            Some(code) => Err(Error::Exited(code)),
-            None => Err(Error::Interrupted),
-        },
-        Err(RunError::Interrupted) => Err(Error::Interrupted),
-        Err(RunError::Launch) => Err(Error::LaunchFailed),
-        Err(RunError::Wait) => Err(Error::WaitFailed),
+        .ok_or(Error::BuildResult)?;
+    let build = Arc::new(Build {
+        head: head.map(str::to_owned),
+        directory,
+        path,
+    });
+    if head.is_some() {
+        emit(Event::Built(Arc::clone(&build))).await;
+    }
+    Ok(build)
+}
+
+fn check_status(status: std::process::ExitStatus) -> Result<(), Error> {
+    match status.code() {
+        Some(0) => Ok(()),
+        Some(code) => Err(Error::Exited(code)),
+        None => Err(Error::Interrupted),
+    }
+}
+
+impl From<RunError> for Error {
+    fn from(error: RunError) -> Self {
+        match error {
+            RunError::Interrupted => Self::Interrupted,
+            RunError::Launch => Self::LaunchFailed,
+            RunError::Wait => Self::WaitFailed,
+        }
     }
 }
 

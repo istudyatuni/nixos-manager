@@ -2,18 +2,37 @@
 name = "nixos-manager"
 version = "0.1.0"
 edition = "2024"
+default-run = "nixos-manager"
 
-[dependencies]
+[workspace]
+members = ["crates/nixos-manager-apply", "crates/nixos-manager-apply-protocol"]
+
+[workspace.dependencies]
 fluent-bundle = "0.16"
 iced = { version = "0.14", default-features = false, features = ["advanced", "tiny-skia", "tokio", "wayland", "x11"] }
 include_dir = { version = "0.7", features = ["glob"] }
+nixos-manager-apply-protocol = { path = "crates/nixos-manager-apply-protocol" }
 rustix = { version = "1", features = ["fs", "process", "pty", "system", "termios"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+signal-hook = { version = "0.4.6", default-features = false }
 sys-locale = "0.3"
 tempfile = "3"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt", "sync", "time"] }
 url = "2"
+
+[dependencies]
+fluent-bundle.workspace = true
+iced.workspace = true
+include_dir.workspace = true
+nixos-manager-apply-protocol.workspace = true
+rustix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sys-locale.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+url.workspace = true
 
 # keep software rendering responsive when running the development build
 [profile.dev.package.tiny-skia]

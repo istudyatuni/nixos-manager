@@ -28,6 +28,7 @@ overview-download-revision = Не удалось подтвердить, что 
 overview-rebuild-tool-unavailable = Для обновления системы нужен исполняемый файл { $program }.
 overview-rebuild-requires-revision = Перед обновлением системы загрузите выбранную ветку.
 overview-rebuild-step-inspect = Проверка репозитория
+overview-rebuild-step-authorize = Запрос прав для применения конфигурации
 overview-rebuild-step-build = Сборка конфигурации
 overview-rebuild-step-register = Регистрация системного поколения
 overview-rebuild-step-boot = Обновление загрузчика

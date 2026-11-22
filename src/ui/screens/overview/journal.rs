@@ -108,6 +108,7 @@ pub(super) fn rebuild_status(i18n: &I18n, run: &Run) -> (String, Color) {
     let mut args = FluentArgs::new();
     let step = match run.step {
         Step::Inspect => "overview-rebuild-step-inspect",
+        Step::Authorize => "overview-rebuild-step-authorize",
         Step::Build => "overview-rebuild-step-build",
         Step::Register => "overview-rebuild-step-register",
         Step::Boot => "overview-rebuild-step-boot",
