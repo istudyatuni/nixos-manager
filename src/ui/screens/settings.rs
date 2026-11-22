@@ -15,8 +15,8 @@ use iced::{
 
 use crate::{
     config::{
-        CONFIG_DIRECTORY, Config, DEFAULT_FLAKE_DIRECTORY, DEFAULT_REPO_PATH, SaveError, UI_SCALES,
-        display_repo_path, github_repository,
+        CONFIG_DIRECTORY, Config, DEFAULT_REPO_PATH, SaveError, UI_SCALES, display_repo_path,
+        github_repository,
     },
     git::{self, Branch, RemoteBranches, RemoteBranchesError},
     i18n::{I18n, LanguagePreference},
@@ -338,7 +338,7 @@ impl State {
             branch = branch.push(text(i18n.text(key)).size(13).color(color));
         }
         let flake_directory = text_input(
-            DEFAULT_FLAKE_DIRECTORY,
+            &i18n.text("settings-flake-directory-placeholder"),
             &self.draft.flake_directory.to_string_lossy(),
         )
         .on_input_maybe(editing.then_some(Message::FlakeDirectoryChanged))

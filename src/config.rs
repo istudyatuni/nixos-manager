@@ -14,7 +14,6 @@ use crate::i18n::LanguagePreference;
 
 pub const CONFIG_DIRECTORY: &str = ".config/nixos-manager";
 pub const DEFAULT_REPO_PATH: &str = "~/.config/nixos-manager/repo";
-pub const DEFAULT_FLAKE_DIRECTORY: &str = ".";
 pub const DEFAULT_UI_SCALE: u16 = 100;
 pub const UI_SCALES: [u16; 6] = [75, 90, DEFAULT_UI_SCALE, 110, 125, 150];
 
@@ -28,7 +27,7 @@ pub struct Config {
     pub token: String,
     pub path: PathBuf,
     pub branch: String,
-    #[serde(default = "default_flake_directory")]
+    #[serde(default)]
     pub flake_directory: PathBuf,
 }
 
@@ -41,7 +40,7 @@ impl Default for Config {
             token: String::new(),
             path: DEFAULT_REPO_PATH.into(),
             branch: String::new(),
-            flake_directory: default_flake_directory(),
+            flake_directory: PathBuf::new(),
         }
     }
 }
@@ -137,10 +136,6 @@ const fn default_ui_scale() -> u16 {
     DEFAULT_UI_SCALE
 }
 
-fn default_flake_directory() -> PathBuf {
-    DEFAULT_FLAKE_DIRECTORY.into()
-}
-
 fn relative_flake_directory(input: &Path) -> Result<PathBuf, SaveError> {
     if input.as_os_str().as_encoded_bytes().contains(&0) {
         return Err(SaveError::FlakeDirectory);
@@ -153,9 +148,6 @@ fn relative_flake_directory(input: &Path) -> Result<PathBuf, SaveError> {
             Component::CurDir => {}
             _ => return Err(SaveError::FlakeDirectory),
         }
-    }
-    if directory.as_os_str().is_empty() {
-        return Ok(default_flake_directory());
     }
     Ok(directory)
 }
