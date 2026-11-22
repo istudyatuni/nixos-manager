@@ -2,3 +2,4 @@ app-title = NixOS Manager
 app-open-settings = Settings
 app-loading-settings = Loading settings…
 app-settings-load-error = Could not read the settings file. Open Settings to save the repository details again.
+app-open-cache-settings = Cache Settings

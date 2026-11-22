@@ -6,7 +6,7 @@ use std::{
     path::{self, Component, Path, PathBuf},
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tempfile::NamedTempFile;
 use url::Url;
 
@@ -62,13 +62,9 @@ pub struct LoadError;
 pub fn load() -> Result<Option<Config>, LoadError> {
     let home = env::home_dir().ok_or(LoadError)?;
     let file = home.join(CONFIG_DIRECTORY).join("config.json");
-    let bytes = match fs::read(file) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(LoadError),
+    let Some(mut config) = read_json::<Config>(&file).map_err(|_| LoadError)? else {
+        return Ok(None);
     };
-
-    let mut config: Config = serde_json::from_slice(&bytes).map_err(|_| LoadError)?;
     config.validate(&home, false).map_err(|_| LoadError)?;
     Ok(Some(config))
 }
@@ -78,19 +74,31 @@ pub fn save(mut config: Config, repository_required: bool) -> Result<Config, Sav
     config.validate(&home, repository_required)?;
 
     let directory = home.join(CONFIG_DIRECTORY);
-    fs::create_dir_all(&directory).map_err(|_| SaveError::Write)?;
-    // NamedTempFile creates files with mode 0600 on Unix.
-    let mut file = NamedTempFile::new_in(&directory).map_err(|_| SaveError::Write)?;
-    file.as_file()
-        .set_permissions(fs::Permissions::from_mode(0o600))
+    prepare_json(&directory, &config)
+        .map_err(|_| SaveError::Write)?
+        .persist(directory.join("config.json"))
         .map_err(|_| SaveError::Write)?;
-    serde_json::to_writer_pretty(&mut file, &config).map_err(|_| SaveError::Write)?;
-    file.write_all(b"\n").map_err(|_| SaveError::Write)?;
-    file.as_file().sync_all().map_err(|_| SaveError::Write)?;
-    file.persist(directory.join("config.json"))
-        .map_err(|_| SaveError::Write)?;
-
     Ok(config)
+}
+
+pub fn read_json<T: DeserializeOwned>(path: &Path) -> io::Result<Option<T>> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+pub fn prepare_json(directory: &Path, value: &impl Serialize) -> io::Result<NamedTempFile> {
+    fs::create_dir_all(directory)?;
+    // NamedTempFile creates files with mode 0600 on Unix.
+    let mut file = NamedTempFile::new_in(directory)?;
+    file.as_file()
+        .set_permissions(fs::Permissions::from_mode(0o600))?;
+    serde_json::to_writer_pretty(&mut file, value)?;
+    file.write_all(b"\n")?;
+    file.as_file().sync_all()?;
+    Ok(file)
 }
 
 impl Config {

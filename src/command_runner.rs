@@ -136,6 +136,21 @@ impl CommandRunner {
         result
     }
 
+    /// Captures output from a command that can report secrets unknown to the runner.
+    pub async fn private_output(&self, command: &mut Command) -> Result<Output, RunError> {
+        self.log_command(command).await;
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|_| RunError::Launch)?
+            .wait_with_output()
+            .await
+            .map_err(|_| RunError::Wait)
+    }
+
     async fn capture(&self, command: &mut Command) -> io::Result<Output> {
         let mut child = command
             .stdin(Stdio::null())

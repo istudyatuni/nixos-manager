@@ -41,13 +41,18 @@
         nativeBuildInputs = [ pkgs.pkg-config pkgs.makeWrapper ];
         buildInputs = libraries;
 
+        postPatch = ''
+          patchShebangs --build tests/fixtures/attic.sh
+        '';
+
         postInstall = ''
           install -Dm755 "$out/bin/nixos-manager-apply" "$out/libexec/nixos-manager-apply"
           rm "$out/bin/nixos-manager-apply"
           install -Dm644 static/packaging/nixos-manager.desktop \
             "$out/share/applications/nixos-manager.desktop"
           wrapProgram "$out/bin/nixos-manager" \
-            --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath libraries}"
+            --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath libraries}" \
+            --suffix PATH : "${pkgs.xdg-utils}/bin"
         '';
       };
 

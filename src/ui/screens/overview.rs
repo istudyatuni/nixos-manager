@@ -8,6 +8,7 @@ use iced::{
 use std::{borrow::Cow, path::Path};
 
 use crate::{
+    attic::{ExpirationWarning, Metadata},
     git,
     i18n::I18n,
     rebuild,
@@ -62,11 +63,41 @@ pub struct Repository<'a> {
     pub download: &'a DownloadStatus,
 }
 
+pub enum CacheNotice<'a> {
+    LoadError,
+    Expiration(&'a Metadata, ExpirationWarning),
+}
+
+impl CacheNotice<'_> {
+    fn view<'a>(&self, i18n: &I18n) -> Element<'a, Message> {
+        let message = match self {
+            Self::LoadError => i18n.text("overview-cache-load-error"),
+            Self::Expiration(metadata, warning) => {
+                let mut args = FluentArgs::new();
+                args.set("cache", metadata.cache_name.as_str());
+                args.set("date", metadata.expiration_rfc3339());
+                let key = match warning {
+                    ExpirationWarning::Expired => "overview-cache-expired",
+                    ExpirationWarning::Expiring => "overview-cache-expiring",
+                };
+                i18n.with_args(key, &args)
+            }
+        };
+        container(text(message).size(14).color(colors::WARNING))
+            .width(Fill)
+            .max_width(CARD_WIDTH)
+            .padding(spacing::LG)
+            .style(containers::card)
+            .into()
+    }
+}
+
 pub fn view<'a>(
     i18n: &'a I18n,
     repository: Option<Repository<'a>>,
     loading: bool,
     load_error: bool,
+    cache_notice: Option<CacheNotice<'a>>,
     rebuild: Option<&'a rebuild::Run>,
     state: &'a State,
 ) -> Element<'a, Message> {
@@ -82,7 +113,10 @@ pub fn view<'a>(
         }
 
         let page = container(
-            column![controls, journal]
+            column![]
+                .push(cache_notice.as_ref().map(|notice| notice.view(i18n)))
+                .push(controls)
+                .push(journal)
                 .width(Fill)
                 .spacing(spacing::LG)
                 .align_x(Center),

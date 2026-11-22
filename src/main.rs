@@ -1,4 +1,5 @@
 mod app;
+mod attic;
 mod command_runner;
 mod config;
 mod git;

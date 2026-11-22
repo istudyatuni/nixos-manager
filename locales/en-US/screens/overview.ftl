@@ -61,3 +61,7 @@ overview-hide-journal = Hide log
 overview-copy-journal = Copy log
 overview-clear-journal = Clear log
 overview-journal-empty = Command output will appear here.
+
+overview-cache-load-error = Could not read the saved cache details. Open Cache Settings to forget them or connect the cache again.
+overview-cache-expired = The token for cache { $cache } expired at { $date }.
+overview-cache-expiring = The token for cache { $cache } expires soon, at { $date }.

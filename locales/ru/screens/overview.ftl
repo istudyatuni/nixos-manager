@@ -61,3 +61,7 @@ overview-hide-journal = Свернуть журнал
 overview-copy-journal = Скопировать логи
 overview-clear-journal = Очистить логи
 overview-journal-empty = Здесь появится вывод команд.
+
+overview-cache-load-error = Не удалось прочитать сохранённые сведения о кеше. Откройте настройки кеша, чтобы забыть сведения или заново подключить кеш.
+overview-cache-expired = Срок действия токена кеша { $cache } истёк ({ $date }).
+overview-cache-expiring = Срок действия токена кеша { $cache } скоро истечёт ({ $date }).

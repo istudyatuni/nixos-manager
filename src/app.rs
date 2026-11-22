@@ -10,6 +10,7 @@ use iced::{
 use tokio::sync::mpsc;
 
 use crate::{
+    attic,
     command_runner::{CommandRunner, LogLine},
     config::{self, Config, DEFAULT_UI_SCALE, LoadError, SaveError},
     git,
@@ -17,10 +18,13 @@ use crate::{
     rebuild,
     ui::{
         modal,
-        screens::{Screen, overview, settings},
+        screens::{Screen, cache_settings, overview, settings},
         style::{self, buttons, containers, spacing},
     },
 };
+
+#[cfg(test)]
+mod tests;
 
 pub struct App {
     screen: Screen,
@@ -28,6 +32,8 @@ pub struct App {
     theme: Theme,
     home: Option<PathBuf>,
     config: Option<Config>,
+    cache: Result<Option<attic::Metadata>, attic::LoadError>,
+    cache_expiration_warning: Option<attic::ExpirationWarning>,
     loading: bool,
     load_error: bool,
     steps: rebuild::Steps,
@@ -50,13 +56,23 @@ pub struct App {
 pub enum Message {
     WindowCloseRequested(window::Id),
     OpenSettings,
+    OpenCacheSettings,
     Overview(overview::Message),
+    CacheSettings(cache_settings::Message),
     Settings(settings::Message),
     FocusSettingsInput(bool),
     SettingsLocalBranches(u64, Vec<git::Branch>),
     SettingsRemoteBranches(u64, Result<git::RemoteBranches, git::RemoteBranchesError>),
-    Loaded(Result<Option<Config>, LoadError>, bool, rebuild::Tools),
+    Loaded(
+        Result<Option<Config>, LoadError>,
+        Result<Option<attic::Metadata>, attic::LoadError>,
+        bool,
+        rebuild::Tools,
+    ),
     Saved(Result<Config, SaveError>),
+    CacheConnected(Result<attic::Metadata, attic::Failure>),
+    CacheForgotten(bool),
+    CacheGuideOpened(bool),
     Downloaded(Result<git::WorkingCopy, git::Error>),
     CommandLogs(Vec<LogLine>),
     Rebuild(rebuild::Event),
@@ -72,6 +88,8 @@ impl App {
             theme: style::theme(),
             home: env::home_dir(),
             config: None,
+            cache: Ok(None),
+            cache_expiration_warning: None,
             loading: true,
             load_error: false,
             steps: rebuild::Steps::default(),
@@ -90,21 +108,31 @@ impl App {
             settings_lookup_generation: 0,
         };
         let runner = app.commands.clone();
+        let home = app.home.clone();
         let load = Task::perform(
             async move {
-                let (result, rebuild_tools) =
-                    tokio::task::spawn_blocking(|| (config::load(), rebuild::Tools::detect()))
-                        .await
-                        .unwrap_or((Err(LoadError), rebuild::Tools::default()));
+                let (result, cache, rebuild_tools) = tokio::task::spawn_blocking(move || {
+                    (
+                        config::load(),
+                        attic::load(home.as_deref()),
+                        rebuild::Tools::detect(),
+                    )
+                })
+                .await
+                .unwrap_or((
+                    Err(LoadError),
+                    Err(attic::LoadError),
+                    rebuild::Tools::default(),
+                ));
                 let runner = match &result {
                     Ok(Some(config)) => runner.with_secret(config.token.clone()),
                     _ => runner,
                 };
                 let git_available = git::available(&runner).await;
-                (result, git_available, rebuild_tools)
+                (result, cache, git_available, rebuild_tools)
             },
-            |(result, git_available, rebuild_tools)| {
-                Message::Loaded(result, git_available, rebuild_tools)
+            |(result, cache, git_available, rebuild_tools)| {
+                Message::Loaded(result, cache, git_available, rebuild_tools)
             },
         );
         let journal = Task::run(
@@ -142,7 +170,7 @@ impl App {
 
     pub fn scale_factor(&self) -> f32 {
         let scale = match &self.screen {
-            Screen::Overview => self
+            Screen::Overview | Screen::CacheSettings(_) => self
                 .config
                 .as_ref()
                 .map_or(DEFAULT_UI_SCALE, |config| config.ui_scale),
@@ -153,7 +181,8 @@ impl App {
 
     pub fn subscription(&self) -> Subscription<Message> {
         let close = window::close_requests().map(Message::WindowCloseRequested);
-        if matches!(&self.screen, Screen::Settings(state) if !state.saving()) {
+        let cache = matches!(self.screen, Screen::CacheSettings(_));
+        if cache || matches!(&self.screen, Screen::Settings(state) if !state.saving()) {
             Subscription::batch([
                 close,
                 event::listen_with(|event, status, _| match (event, status) {
@@ -165,6 +194,13 @@ impl App {
                         }),
                         event::Status::Ignored,
                     ) => Some(Message::FocusSettingsInput(modifiers.shift())),
+                    (
+                        Event::Keyboard(keyboard::Event::KeyPressed {
+                            key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                            ..
+                        }),
+                        event::Status::Ignored,
+                    ) => Some(Message::CacheSettings(cache_settings::Message::Close)),
                     _ => None,
                 }),
             ])
@@ -176,11 +212,16 @@ impl App {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::WindowCloseRequested(id) => {
-                if !self.rebuild.as_ref().is_some_and(rebuild::Run::is_running) {
-                    return window::close(id);
-                }
                 self.pending_close = Some(id);
-                self.interrupt_rebuild();
+                return self.finish_pending_close();
+            }
+            Message::OpenCacheSettings
+                if !self.loading && matches!(self.screen, Screen::Overview) =>
+            {
+                self.screen = Screen::CacheSettings(Box::new(cache_settings::State::new(
+                    self.cache.as_ref().ok().and_then(Option::as_ref),
+                    attic::find(env::var_os("PATH").as_deref()),
+                )));
             }
             Message::OpenSettings if !self.loading && matches!(self.screen, Screen::Overview) => {
                 self.screen = Screen::Settings(Box::new(settings::State::new(
@@ -274,7 +315,10 @@ impl App {
                         rebuild::Event::Built(build) => self.built = Some(build),
                         rebuild::Event::InterruptFailed => {
                             run.interrupting = false;
-                            self.pending_close = None;
+                            if !matches!(&self.screen, Screen::CacheSettings(state) if state.busy())
+                            {
+                                self.pending_close = None;
+                            }
                         }
                         rebuild::Event::Finished(outcome) => {
                             if matches!(outcome, Err(rebuild::Error::BuildResult)) {
@@ -282,7 +326,9 @@ impl App {
                             }
                             run.outcome = Some(outcome);
                             self.rebuild_interrupt = None;
-                            if let Some(id) = self.pending_close.take() {
+                            if !matches!(&self.screen, Screen::CacheSettings(state) if state.busy())
+                                && let Some(id) = self.pending_close.take()
+                            {
                                 return window::close(id);
                             }
                             self.overview.set_rebuild_error(&self.i18n, Some(run));
@@ -297,10 +343,11 @@ impl App {
                     self.working_copy = status;
                 }
             }
-            Message::Loaded(result, git_available, rebuild_tools) => {
+            Message::Loaded(result, cache, git_available, rebuild_tools) => {
                 self.loading = false;
                 self.git_available = git_available;
                 self.rebuild_tools = rebuild_tools;
+                self.set_cache(cache, attic::now());
                 match result {
                     Ok(Some(config)) => {
                         self.i18n.set_language(config.language);
@@ -310,6 +357,32 @@ impl App {
                     Err(LoadError) => self.load_error = true,
                 }
                 return self.inspect_repository();
+            }
+            Message::CacheSettings(message) => return self.update_cache_settings(message),
+            Message::CacheConnected(result) => {
+                if let Screen::CacheSettings(state) = &mut self.screen {
+                    let close = state.connected(&result, attic::now());
+                    if let Ok(metadata) = result {
+                        self.set_cache(Ok(Some(metadata)), attic::now());
+                        return self.finish_cache_action(close);
+                    }
+                    self.pending_close = None;
+                }
+            }
+            Message::CacheForgotten(succeeded) => {
+                if let Screen::CacheSettings(state) = &mut self.screen {
+                    let close = state.forgotten(succeeded);
+                    if succeeded {
+                        self.set_cache(Ok(None), attic::now());
+                        return self.finish_cache_action(close);
+                    }
+                    self.pending_close = None;
+                }
+            }
+            Message::CacheGuideOpened(succeeded) => {
+                if let Screen::CacheSettings(state) = &mut self.screen {
+                    state.guide_finished(succeeded);
+                }
             }
             Message::Settings(message) => {
                 let can_save = !self.is_busy();
@@ -331,7 +404,9 @@ impl App {
                 }
             }
             Message::FocusSettingsInput(reverse) => {
-                if matches!(&self.screen, Screen::Settings(state) if !state.saving()) {
+                if matches!(&self.screen, Screen::Settings(state) if !state.saving())
+                    || matches!(&self.screen, Screen::CacheSettings(state) if !state.busy())
+                {
                     return if reverse {
                         operation::focus_previous()
                     } else {
@@ -383,7 +458,7 @@ impl App {
                     }
                 }
             },
-            Message::OpenSettings => {}
+            Message::OpenSettings | Message::OpenCacheSettings => {}
         }
         Task::none()
     }
@@ -398,6 +473,89 @@ impl App {
 
     fn is_busy(&self) -> bool {
         self.download.is_running() || self.rebuild.as_ref().is_some_and(rebuild::Run::is_running)
+    }
+
+    fn set_cache(
+        &mut self,
+        result: Result<Option<attic::Metadata>, attic::LoadError>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) {
+        self.cache_expiration_warning = result
+            .as_ref()
+            .ok()
+            .and_then(Option::as_ref)
+            .and_then(|metadata| metadata.warning(now));
+        self.cache = result;
+    }
+
+    fn finish_pending_close(&mut self) -> Task<Message> {
+        let Some(id) = self.pending_close else {
+            return Task::none();
+        };
+        if matches!(&self.screen, Screen::CacheSettings(state) if state.busy()) {
+            return Task::none();
+        }
+        if self.rebuild.as_ref().is_some_and(rebuild::Run::is_running) {
+            self.interrupt_rebuild();
+            return Task::none();
+        }
+        self.pending_close = None;
+        window::close(id)
+    }
+
+    fn finish_cache_action(&mut self, close_modal: bool) -> Task<Message> {
+        if close_modal {
+            self.screen = Screen::Overview;
+        }
+        if self.pending_close.is_some() {
+            return self.finish_pending_close();
+        }
+        self.inspect_repository()
+    }
+
+    fn update_cache_settings(&mut self, message: cache_settings::Message) -> Task<Message> {
+        let Screen::CacheSettings(state) = &mut self.screen else {
+            return Task::none();
+        };
+        match state.update(message, attic::now()) {
+            cache_settings::Action::None => Task::none(),
+            cache_settings::Action::Close => {
+                self.screen = Screen::Overview;
+                self.inspect_repository()
+            }
+            cache_settings::Action::Connect(path, connection) => {
+                let home = self.home.clone();
+                let runner = self.commands.clone();
+                Task::perform(
+                    async move { attic::connect(&path, home.as_deref(), runner, connection).await },
+                    Message::CacheConnected,
+                )
+            }
+            cache_settings::Action::Forget => {
+                let home = self.home.clone();
+                Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || attic::forget(home.as_deref()))
+                            .await
+                            .is_ok_and(|result| result.is_ok())
+                    },
+                    Message::CacheForgotten,
+                )
+            }
+            cache_settings::Action::OpenGuide => Task::perform(
+                async {
+                    tokio::process::Command::new("xdg-open")
+                        .arg(cache_settings::GUIDE_URL)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status()
+                        .await
+                        .is_ok_and(|status| status.success())
+                },
+                Message::CacheGuideOpened,
+            ),
+        }
     }
 
     fn lookup_settings_branches(&mut self, allow_remote: bool) -> Task<Message> {
@@ -579,6 +737,11 @@ impl App {
     pub fn view(&self) -> Element<'_, Message> {
         let dialog = match &self.screen {
             Screen::Overview => None,
+            Screen::CacheSettings(state) => Some(
+                state
+                    .view(&self.i18n, &self.cache)
+                    .map(Message::CacheSettings),
+            ),
             Screen::Settings(state) => Some(
                 state
                     .view(&self.i18n, !self.is_busy())
@@ -607,6 +770,13 @@ impl App {
             repository,
             self.loading,
             self.load_error,
+            match (&self.cache, self.cache_expiration_warning) {
+                (Err(_), _) => Some(overview::CacheNotice::LoadError),
+                (Ok(Some(metadata)), Some(warning)) => {
+                    Some(overview::CacheNotice::Expiration(metadata, warning))
+                }
+                _ => None,
+            },
             self.rebuild.as_ref(),
             &self.overview,
         )
@@ -614,6 +784,10 @@ impl App {
         let toolbar = row![
             text(self.title()).size(22),
             space().width(Fill),
+            button(text(self.i18n.text("app-open-cache-settings")))
+                .padding([7, 12])
+                .style(buttons::secondary)
+                .on_press_maybe((!self.loading).then_some(Message::OpenCacheSettings)),
             button(text(self.i18n.text("app-open-settings")))
                 .padding([7, 12])
                 .style(buttons::secondary)
