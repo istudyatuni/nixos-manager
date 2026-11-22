@@ -14,7 +14,7 @@ use tokio::{fs, process::Command};
 
 use crate::{
     command_runner::CommandRunner,
-    config::{Config, github_url, valid_branch},
+    config::{Config, github_url, valid_branch, valid_token},
 };
 
 pub const CREDENTIAL_HELPER_FLAG: &str = "--git-credential-helper";
@@ -613,7 +613,6 @@ fn network_command(
     token: &str,
     remote: &str,
 ) -> Result<Command, Error> {
-    let executable = env::current_exe().map_err(|_| Error::Unavailable)?;
     let mut git = command();
     git.current_dir(path)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -622,9 +621,9 @@ fn network_command(
         .env_remove("SSH_ASKPASS")
         .env_remove("GIT_CURL_VERBOSE")
         .env_remove("GIT_SSL_NO_VERIFY")
-        .env(HELPER_EXECUTABLE, executable)
-        .env(HELPER_REPOSITORY, repository)
-        .env(HELPER_TOKEN, token)
+        .env_remove(HELPER_EXECUTABLE)
+        .env_remove(HELPER_REPOSITORY)
+        .env_remove(HELPER_TOKEN)
         .args([
             "-c",
             "core.askPass=",
@@ -634,15 +633,21 @@ fn network_command(
             "credential.helper=",
         ])
         .arg("-c")
-        .arg(format!(
-            "credential.helper=!exec \"${HELPER_EXECUTABLE}\" {CREDENTIAL_HELPER_FLAG}"
-        ))
-        .arg("-c")
-        .arg(format!("credential.{remote}.useHttpPath=true"))
-        .arg("-c")
         .arg(format!("http.{remote}.followRedirects=false"))
         .arg("-c")
         .arg(format!("http.{remote}.sslVerify=true"));
+    if !token.is_empty() {
+        let executable = env::current_exe().map_err(|_| Error::Unavailable)?;
+        git.env(HELPER_EXECUTABLE, executable)
+            .env(HELPER_REPOSITORY, repository)
+            .env(HELPER_TOKEN, token)
+            .arg("-c")
+            .arg(format!(
+                "credential.helper=!exec \"${HELPER_EXECUTABLE}\" {CREDENTIAL_HELPER_FLAG}"
+            ))
+            .arg("-c")
+            .arg(format!("credential.{remote}.useHttpPath=true"));
+    }
     for (key, _) in env::vars_os() {
         if key.as_encoded_bytes().starts_with(b"GIT_TRACE") {
             git.env_remove(key);
@@ -679,9 +684,7 @@ pub fn write_credential() -> io::Result<()> {
         })
         && path.is_some_and(|path| same_repository_path(&path, repository.path()))
         && !token.is_empty()
-        && !token
-            .chars()
-            .any(|character| character.is_whitespace() || character == '\0')
+        && valid_token(&token)
     {
         writeln!(
             io::stdout().lock(),

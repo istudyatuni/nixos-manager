@@ -16,7 +16,7 @@ use iced::{
 use crate::{
     config::{
         CONFIG_DIRECTORY, Config, DEFAULT_REPO_PATH, SaveError, UI_SCALES, display_repo_path,
-        github_repository,
+        github_repository, valid_token,
     },
     git::{self, Branch, RemoteBranches, RemoteBranchesError},
     i18n::{I18n, LanguagePreference},
@@ -80,7 +80,7 @@ pub struct State {
     remote: Lookup<Result<RemoteBranches, RemoteBranchesError>>,
     branch_names: Vec<String>,
     auto_branch: bool,
-    save_after_head: bool,
+    save_after_lookup: bool,
 }
 
 impl State {
@@ -98,7 +98,7 @@ impl State {
             remote: Lookup::Pending,
             branch_names: Vec::new(),
             auto_branch: false,
-            save_after_head: false,
+            save_after_lookup: false,
         }
     }
 
@@ -127,17 +127,32 @@ impl State {
                 .is_some_and(|repository| !same_repository(repository, &self.original.repository))
     }
 
+    fn needs_lookup_to_save(&self) -> bool {
+        self.git_available
+            && self.repository.is_some()
+            && (self.needs_head() || self.draft.token.trim() != self.original.token.trim())
+            && match self.remote {
+                Lookup::Finished(Ok(_)) => false,
+                Lookup::Finished(Err(RemoteBranchesError::Network)) => {
+                    self.draft.token.trim().is_empty()
+                }
+                _ => true,
+            }
+    }
+
     pub fn branch_lookup(&self, allow_remote: bool) -> Option<BranchLookup> {
         let repository = self.repository.as_ref()?;
+        let token = self.draft.token.trim();
         let check_local = matches!(self.local, Lookup::Pending);
-        let check_remote = allow_remote && matches!(self.remote, Lookup::Pending);
+        let check_remote =
+            allow_remote && matches!(self.remote, Lookup::Pending) && valid_token(token);
         if !self.git_available || (!check_local && !check_remote) {
             return None;
         }
         Some(BranchLookup {
             repository: repository.clone(),
             path: self.draft.path.clone(),
-            token: self.draft.token.trim().to_owned(),
+            token: token.to_owned(),
             check_local,
             check_remote,
         })
@@ -188,8 +203,10 @@ impl State {
             self.draft.branch.clone_from(branch);
             self.auto_branch = true;
         }
-        (std::mem::take(&mut self.save_after_head) && self.can_save(operation_idle))
-            .then(|| self.start_save())
+        (std::mem::take(&mut self.save_after_lookup)
+            && self.can_save(operation_idle)
+            && !self.needs_lookup_to_save())
+        .then(|| self.start_save())
     }
 
     fn update_branch_names(&mut self) {
@@ -216,12 +233,19 @@ impl State {
         match message {
             Message::InputFocused => return Action::LookupBranches,
             Message::Save => {
-                if !self.can_save(operation_idle) || self.save_after_head {
+                if !self.can_save(operation_idle) || self.save_after_lookup {
                     return Action::None;
                 }
                 self.error = None;
-                if self.needs_head() && !matches!(self.remote, Lookup::Finished(_)) {
-                    self.save_after_head = true;
+                if !valid_token(self.draft.token.trim()) {
+                    self.error = Some(SaveError::Token);
+                    return Action::None;
+                }
+                if self.needs_lookup_to_save() {
+                    if matches!(self.remote, Lookup::Finished(Err(_))) {
+                        self.remote = Lookup::Pending;
+                    }
+                    self.save_after_lookup = true;
                     return Action::LookupBranches;
                 }
                 return Action::Save(self.start_save());
@@ -230,7 +254,7 @@ impl State {
         }
 
         self.error = None;
-        self.save_after_head = false;
+        self.save_after_lookup = false;
         match message {
             Message::LanguageChanged(value) => self.draft.language = value,
             Message::ScaleChanged(value) => self.draft.ui_scale = value,
@@ -276,7 +300,7 @@ impl State {
     pub fn view<'a>(&'a self, i18n: &'a I18n, operation_idle: bool) -> Element<'a, Message> {
         let editing = !self.saving;
         let submit =
-            (self.can_save(operation_idle) && !self.save_after_head).then_some(Message::Save);
+            (self.can_save(operation_idle) && !self.save_after_lookup).then_some(Message::Save);
         let repository = text_input(
             &i18n.text("settings-repository-placeholder"),
             &self.draft.repository,
@@ -287,6 +311,25 @@ impl State {
             .secure(true)
             .on_input_maybe(editing.then_some(Message::TokenChanged))
             .on_submit_maybe(submit.clone());
+        let mut token = field(
+            i18n.text("settings-token"),
+            RepositoryInput::new(styled_input(token), editing).into_element(),
+        )
+        .push(
+            text(i18n.text("settings-token-hint"))
+                .size(13)
+                .color(colors::TEXT_MUTED),
+        );
+        if matches!(
+            self.remote,
+            Lookup::Finished(Err(RemoteBranchesError::Unavailable))
+        ) {
+            token = token.push(
+                text(i18n.text("settings-repository-unavailable"))
+                    .size(13)
+                    .color(colors::DANGER),
+            );
+        }
         let mut path_args = FluentArgs::new();
         path_args.set("path", DEFAULT_REPO_PATH);
         let path = text_input(
@@ -320,12 +363,10 @@ impl State {
             Lookup::Finished(Err(RemoteBranchesError::Network)) => {
                 Some(("settings-branch-network-warning", colors::WARNING))
             }
-            Lookup::Finished(result)
+            Lookup::Finished(Ok(remote))
                 if self.needs_head()
                     && self.draft.branch.trim().is_empty()
-                    && result
-                        .as_ref()
-                        .map_or(true, |remote| remote.default_branch.is_none()) =>
+                    && remote.default_branch.is_none() =>
             {
                 Some(("settings-branch-head-unavailable", colors::TEXT_MUTED))
             }
@@ -353,10 +394,7 @@ impl State {
         let repository = column![
             text(i18n.text("settings-repository-section")).size(18),
             field(i18n.text("settings-repository"), styled_input(repository)),
-            field(
-                i18n.text("settings-token"),
-                RepositoryInput::new(styled_input(token), editing).into_element()
-            ),
+            token,
             field(
                 i18n.text("settings-path"),
                 RepositoryInput::new(styled_input(path), editing).into_element()

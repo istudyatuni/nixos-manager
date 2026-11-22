@@ -24,6 +24,7 @@ pub struct Config {
     #[serde(default = "default_ui_scale")]
     pub ui_scale: u16,
     pub repository: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub token: String,
     pub path: PathBuf,
     pub branch: String,
@@ -116,7 +117,7 @@ impl Config {
         self.repository = github_repository(self.repository.trim()).ok_or(SaveError::Repository)?;
 
         let token = self.token.trim();
-        if token.is_empty() || token.chars().any(char::is_whitespace) || token.contains('\0') {
+        if !valid_token(token) {
             return Err(SaveError::Token);
         }
         self.token = token.to_owned();
@@ -209,6 +210,12 @@ pub fn absolute_repo_path(input: &Path, home: &Path) -> Result<PathBuf, SaveErro
     }
 
     path::absolute(input).map_err(|_| SaveError::Path)
+}
+
+pub fn valid_token(token: &str) -> bool {
+    !token
+        .chars()
+        .any(|character| character.is_whitespace() || character == '\0')
 }
 
 pub fn valid_branch(branch: &str) -> bool {
