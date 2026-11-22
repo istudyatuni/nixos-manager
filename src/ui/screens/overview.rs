@@ -200,6 +200,12 @@ fn configured<'a>(
         "overview-apply"
     };
     let actions = row![
+        button(text(i18n.text("overview-download")))
+            .padding([7, 12])
+            .style(buttons::secondary)
+            .on_press_maybe(
+                (repository.git_available && !repository.busy).then_some(Message::Download),
+            ),
         button(text(i18n.text(action)))
             .padding([7, 12])
             .style(buttons::primary)
@@ -209,12 +215,6 @@ fn configured<'a>(
                     && repository.working_copy.matches_revision
                     && !repository.busy)
                     .then_some(Message::Rebuild),
-            ),
-        button(text(i18n.text("overview-download")))
-            .padding([7, 12])
-            .style(buttons::secondary)
-            .on_press_maybe(
-                (repository.git_available && !repository.busy).then_some(Message::Download),
             ),
     ]
     .spacing(spacing::MD)
