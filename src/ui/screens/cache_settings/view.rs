@@ -180,7 +180,8 @@ impl State {
             .size(15)
             .padding([8, 10])
             .style(inputs::input);
-        let token_input = text_input("", &self.token)
+        let token_placeholder = if saved.is_some() { "***" } else { "" };
+        let token_input = text_input(token_placeholder, &self.token)
             .secure(true)
             .on_input_maybe(editing.then_some(Message::TokenChanged))
             .on_submit_maybe(submit)

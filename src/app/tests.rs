@@ -119,11 +119,13 @@ async fn cache_toolbar_button_opens_a_separate_dialog_without_a_repository() {
     let field_positions = ["Server URL", "Local server name", "Token", "Cache name"]
         .map(|name| labels.bounds(name).y);
     assert!(field_positions.windows(2).all(|pair| pair[0] < pair[1]));
-    assert!(labels.contains("Attic manages the token"));
+    assert!(labels.contains("Attic manages the token. Use this field to enter a new token."));
 
     app.set_language(LanguagePreference::Russian);
     let labels = layout(&mut app.view(), &renderer, size).2;
-    assert!(labels.contains("Токеном управляет Attic"));
+    assert!(
+        labels.contains("Токеном управляет Attic. Поле предназначено для ввода нового токена.")
+    );
     assert!(labels.contains("Подключить кеш"));
 }
 
