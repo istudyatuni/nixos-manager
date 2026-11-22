@@ -9,7 +9,7 @@ members = ["crates/nixos-manager-apply", "crates/nixos-manager-apply-protocol"]
 
 [workspace.dependencies]
 fluent-bundle = "0.16"
-iced = { version = "0.14", default-features = false, features = ["advanced", "tiny-skia", "tokio", "wayland", "x11"] }
+iced = { version = "0.14", default-features = false, features = ["advanced", "tiny-skia", "tokio", "wayland", "wgpu", "x11"] }
 include_dir = { version = "0.7", features = ["glob"] }
 nixos-manager-apply-protocol = { path = "crates/nixos-manager-apply-protocol" }
 rustix = { version = "1", features = ["fs", "process", "pty", "system", "termios"] }
