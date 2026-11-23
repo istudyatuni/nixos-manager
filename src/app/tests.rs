@@ -1049,7 +1049,17 @@ async fn build_history_copies_paths_generations_and_build_details() {
     let _ = app.update(Message::HistoryLoaded(app.history_generation, snapshot));
 
     let (mut tree, _, labels) = layout(&mut app.view(), &renderer, size);
-    assert_eq!(labels.focusables.len(), 4);
+    assert_eq!(labels.focusables.len(), 6);
+    let profile = app.i18n.text("history-system-profile");
+    assert_eq!(
+        labels
+            .text
+            .iter()
+            .filter(|(text, _)| text == &profile)
+            .count(),
+        1
+    );
+    assert!(labels.bounds(&profile).y < labels.focusables[1].y);
     let shortcut = |key: &'static str, code| {
         Event::Keyboard(keyboard::Event::KeyPressed {
             key: keyboard::Key::Character(key.into()),
@@ -1065,7 +1075,9 @@ async fn build_history_copies_paths_generations_and_build_details() {
     for (index, fragments) in [
         vec![store_path],
         vec!["generation", "42"],
-        vec!["41"],
+        vec![store_path],
+        vec!["generation", "41"],
+        vec![store_path],
         vec![&built_at, "main", &revision[..8]],
     ]
     .into_iter()
@@ -1102,7 +1114,7 @@ async fn build_history_copies_paths_generations_and_build_details() {
             }
         }
         let copied = clipboard.0.expect("copied selected text");
-        if index == 0 {
+        if fragments == [store_path] {
             assert_eq!(copied, store_path);
         }
         assert!(!copied.contains(&revision[..9]));

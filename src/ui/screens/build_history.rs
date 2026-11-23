@@ -34,7 +34,7 @@ pub enum Message {
 #[derive(Clone, Copy)]
 pub enum TextTarget {
     Path(usize),
-    ProfileGeneration(usize),
+    Generation(usize),
     Note(usize, usize),
     Confirmation,
 }
@@ -49,7 +49,7 @@ pub enum Action {
 #[derive(Default)]
 pub struct State {
     selection: Option<(ReadyTarget, Content)>,
-    rows: Vec<TargetText>,
+    rows: Vec<TargetRow>,
 }
 
 impl State {
@@ -70,10 +70,10 @@ impl State {
             Message::SelectText(target, action) if !action.is_edit() => {
                 let content = match target {
                     TextTarget::Path(row) => self.rows.get_mut(row).map(|row| &mut row.path),
-                    TextTarget::ProfileGeneration(row) => self
+                    TextTarget::Generation(row) => self
                         .rows
                         .get_mut(row)
-                        .and_then(|row| row.profile_generation.as_mut()),
+                        .and_then(|row| row.generation.as_mut()),
                     TextTarget::Note(row, note) => self
                         .rows
                         .get_mut(row)
@@ -90,10 +90,19 @@ impl State {
     }
 
     pub fn set_targets(&mut self, i18n: &I18n, targets: &[Target]) {
-        self.rows = targets
-            .iter()
-            .map(|target| TargetText::new(i18n, target))
-            .collect();
+        self.rows.clear();
+        for (index, target) in targets.iter().enumerate() {
+            for &number in &target.generations {
+                self.rows
+                    .push(TargetRow::new(i18n, index, target, Some(number)));
+            }
+            if target.generations.is_empty()
+                || !target.builds.is_empty()
+                || (target.profile_selected && target.selected_generation.is_none())
+            {
+                self.rows.push(TargetRow::new(i18n, index, target, None));
+            }
+        }
     }
 
     pub fn view<'a>(
@@ -121,7 +130,7 @@ impl State {
 fn list<'a>(
     i18n: &'a I18n,
     snapshot: Option<&'a Snapshot>,
-    rows: &'a [TargetText],
+    rows: &'a [TargetRow],
     can_activate: bool,
     missing_tool: Option<&str>,
 ) -> Element<'a, Message> {
@@ -181,11 +190,11 @@ fn list<'a>(
         return content.push(actions).into();
     }
     let mut entries = column![].spacing(spacing::LG).width(Fill);
-    for (index, (target, labels)) in snapshot.targets.iter().zip(rows).enumerate() {
+    for (index, entry) in rows.iter().enumerate() {
         entries = entries.push(rule::horizontal(1)).push(target_row(
             i18n,
-            target,
-            labels,
+            &snapshot.targets[entry.target_index],
+            entry,
             index,
             can_activate,
         ));
@@ -196,36 +205,30 @@ fn list<'a>(
         .into()
 }
 
-struct TargetText {
+struct TargetRow {
+    target_index: usize,
     path: Content,
-    profile_generation: Option<Content>,
+    generation: Option<Content>,
+    profile_selected: bool,
     notes: Vec<Content>,
 }
 
-impl TargetText {
-    fn new(i18n: &I18n, target: &Target) -> Self {
-        let mut notes = Vec::new();
-        let other_generations = target
-            .generations
-            .iter()
-            .copied()
-            .filter(|number| Some(*number) != target.selected_generation)
-            .map(|number| generation_label(i18n, number))
-            .collect::<Vec<_>>();
-        if !other_generations.is_empty() {
-            notes.push(Content::with_text(&other_generations.join(" · ")));
-        }
-        notes.extend(
+impl TargetRow {
+    fn new(i18n: &I18n, target_index: usize, target: &Target, number: Option<u64>) -> Self {
+        let notes = if number.is_none() {
             target
                 .builds
                 .iter()
-                .map(|build| Content::with_text(&build_label(i18n, build))),
-        );
+                .map(|build| Content::with_text(&build_label(i18n, build)))
+                .collect()
+        } else {
+            Vec::new()
+        };
         Self {
+            target_index,
             path: Content::with_text(&target.store_path.to_string_lossy()),
-            profile_generation: target
-                .selected_generation
-                .map(|number| Content::with_text(&generation_label(i18n, number))),
+            generation: number.map(|number| Content::with_text(&generation_label(i18n, number))),
+            profile_selected: target.profile_selected && number == target.selected_generation,
             notes,
         }
     }
@@ -240,7 +243,7 @@ fn generation_label(i18n: &I18n, number: u64) -> String {
 fn target_row<'a>(
     i18n: &I18n,
     target: &Target,
-    labels: &'a TargetText,
+    labels: &'a TargetRow,
     index: usize,
     can_activate: bool,
 ) -> Element<'a, Message> {
@@ -266,13 +269,22 @@ fn target_row<'a>(
     if badges.iter().any(|(show, _, _)| *show) {
         details = details.push(statuses);
     }
-    if target.profile_selected {
-        let generation = labels.profile_generation.as_ref().map(|content| {
-            selectable_text::view(content, Font::DEFAULT, 13, colors::INFO, move |action| {
-                Message::SelectText(TextTarget::ProfileGeneration(index), action)
-            })
-        });
-        details = details.push(column![profile_caption(i18n), generation].spacing(spacing::SM));
+    if labels.profile_selected {
+        details = details.push(profile_caption(i18n));
+    }
+    if let Some(generation) = &labels.generation {
+        let color = if labels.profile_selected {
+            colors::INFO
+        } else {
+            colors::TEXT_MUTED
+        };
+        details = details.push(selectable_text::view(
+            generation,
+            Font::DEFAULT,
+            13,
+            color,
+            move |action| Message::SelectText(TextTarget::Generation(index), action),
+        ));
     }
     for (line, note) in labels.notes.iter().enumerate() {
         details = details.push(selectable_text::view(
