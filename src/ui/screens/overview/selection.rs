@@ -36,7 +36,7 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
-            journal_expanded: true,
+            journal_expanded: false,
             journal: journal::Output::default(),
             working_copy: selectable_text::Label::new(REPOSITORY_STATUS_SIZE),
             pending_checkout: None,

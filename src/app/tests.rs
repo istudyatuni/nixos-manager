@@ -100,6 +100,54 @@ fn boot_with_cache(cache: Result<Option<attic::Metadata>, attic::LoadError>) -> 
     app
 }
 
+#[test]
+fn journal_collapses_only_after_successful_downloads_and_rebuilds() {
+    let mut app = boot_with_cache(Ok(None));
+    let config = Config {
+        repository: "https://github.com/example/config".into(),
+        ..Config::default()
+    };
+    app.config = Some(config.clone());
+    app.git_available = true;
+    assert!(!app.overview.journal_expanded);
+
+    for result in [
+        Ok(git::WorkingCopy::default()),
+        Err(git::Error::LocalChanges),
+    ] {
+        let success = result.is_ok();
+        let _ = app.update(Message::Overview(overview::Message::Download));
+        assert!(app.overview.journal_expanded);
+        let _ = app.update(Message::Downloaded(result));
+        assert_eq!(app.overview.journal_expanded, !success);
+    }
+
+    for outcome in [
+        Ok(()),
+        Err(rebuild::Error::Exited(1)),
+        Err(rebuild::Error::Interrupted),
+    ] {
+        app.overview.journal_expanded = false;
+        let steps = rebuild::Steps::default();
+        let _ = app.start_run(
+            rebuild::Request::Repository {
+                config: Box::new(config.clone()),
+                steps,
+                cached: None,
+            },
+            steps,
+            true,
+        );
+        assert!(app.overview.journal_expanded);
+        let _ = app.update(Message::Rebuild(rebuild::Event::Started(
+            rebuild::Step::Activate,
+        )));
+        assert!(app.overview.journal_expanded);
+        let _ = app.update(Message::Rebuild(rebuild::Event::Finished(outcome)));
+        assert_eq!(app.overview.journal_expanded, outcome.is_err());
+    }
+}
+
 #[tokio::test]
 async fn toolbar_settings_menu_opens_both_dialogs_without_a_repository() {
     let mut app = boot_with_cache(Ok(None));

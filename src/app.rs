@@ -302,6 +302,7 @@ impl App {
                     .cloned()
                 {
                     self.download = overview::DownloadStatus::Running;
+                    self.overview.journal_expanded = true;
                     self.overview.set_download_error(&self.i18n, &self.download);
                     self.working_copy.matches_revision = false;
                     self.invalidate_repository_check();
@@ -317,6 +318,7 @@ impl App {
                     .map(|status| {
                         self.steps = rebuild::Steps::default();
                         self.working_copy = status;
+                        self.overview.journal_expanded = false;
                     })
                     .inspect_err(|error| {
                         if matches!(error, git::Error::LocalChanges) {
@@ -374,6 +376,9 @@ impl App {
                             }
                         }
                         rebuild::Event::Finished(outcome) => {
+                            if outcome.is_ok() {
+                                self.overview.journal_expanded = false;
+                            }
                             if !run.ready && matches!(outcome, Err(rebuild::Error::BuildResult)) {
                                 self.built = None;
                             }
