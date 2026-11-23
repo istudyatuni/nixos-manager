@@ -283,6 +283,108 @@ async fn cache_settings_show_the_expiration_and_actions_in_order() {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn middle_click_pastes_primary_into_editable_settings_fields() {
+    #[derive(Default)]
+    struct PrimaryClipboard(std::cell::Cell<usize>);
+
+    impl clipboard::Clipboard for PrimaryClipboard {
+        fn read(&self, kind: clipboard::Kind) -> Option<String> {
+            assert_eq!(kind, clipboard::Kind::Primary);
+            self.0.set(self.0.get() + 1);
+            Some("é\nX\t".to_owned())
+        }
+
+        fn write(&mut self, _kind: clipboard::Kind, _contents: String) {
+            panic!("pasting should not write to the clipboard");
+        }
+    }
+
+    let mut app = boot_with_cache(Ok(None));
+    app.config = Some(Config {
+        repository: "https://github.com/example/repository".into(),
+        branch: "main".into(),
+        path: "/tmp/repository".into(),
+        ..Config::default()
+    });
+    app.git_available = true;
+    let _ = app.update(Message::OpenSettings);
+    let renderer = headless().await;
+    let size = Size::new(800.0, 1000.0);
+    let mut clipboard = PrimaryClipboard::default();
+    let mut paste = |app: &App, fields: &[&str]| {
+        let mut view = app.view();
+        let (mut tree, node, labels) = layout(&mut view, &renderer, size);
+        let mut messages = Vec::new();
+        for field in fields {
+            let label = labels.bounds(field);
+            let input = labels
+                .inputs
+                .iter()
+                .find(|input| input.y > label.y)
+                .unwrap();
+            view.as_widget_mut().update(
+                &mut tree,
+                &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Middle)),
+                Layout::new(&node),
+                mouse::Cursor::Available(Point::new(input.x + 2.0, input.center_y())),
+                &renderer,
+                &mut clipboard,
+                &mut Shell::new(&mut messages),
+                &Rectangle::with_size(size),
+            );
+        }
+        messages
+    };
+
+    use Message::{CacheSettings, Settings};
+    use cache_settings::Message as Cache;
+    use settings::Message as Repo;
+    let repository = paste(
+        &app,
+        &[
+            "GitHub repository URL",
+            "GitHub access token",
+            "Local path",
+            "Branch",
+            "Subdirectory containing flake.nix",
+        ],
+    );
+    let mut changes = repository
+        .iter()
+        .filter(|message| !matches!(message, Settings(Repo::InputFocused)));
+    assert!(matches!(
+        changes.next(),
+        Some(Settings(Repo::RepositoryChanged(value))) if value == "éXhttps://github.com/example/repository"
+    ));
+    assert!(matches!(changes.next(), Some(Settings(Repo::TokenChanged(value))) if value == "éX"));
+    assert!(matches!(
+        changes.next(),
+        Some(Settings(Repo::PathChanged(value))) if value == "éX/tmp/repository"
+    ));
+    assert!(
+        matches!(changes.next(), Some(Settings(Repo::BranchChanged(value))) if value == "éXmain")
+    );
+    assert!(matches!(
+        changes.next(),
+        Some(Settings(Repo::FlakeDirectoryChanged(value))) if value == "éX"
+    ));
+    assert!(changes.next().is_none());
+
+    app.screen = Screen::CacheSettings(Box::new(cache_settings::State::new(None, true)));
+    let cache = paste(
+        &app,
+        &["Server URL", "Local server name", "Token", "Cache name"],
+    );
+    assert!(matches!(
+        cache.as_slice(),
+        [CacheSettings(Cache::UrlChanged(url)), CacheSettings(Cache::ServerNameChanged(name)), CacheSettings(Cache::TokenChanged(token))]
+            if url == "éX" && name == "éXprivate" && token == "éX"
+    ));
+    assert_eq!(clipboard.0.get(), 8);
+}
+
 #[tokio::test]
 async fn cache_settings_offer_the_guide_when_no_cache_is_saved() {
     let mut app = boot_with_cache(Ok(None));

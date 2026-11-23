@@ -2,16 +2,19 @@ use iced::{
     Element, Event, Length, Padding, Pixels, Rectangle, Renderer, Size, Theme, Vector,
     advanced::{
         Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer,
-        text::Renderer as TextRenderer,
+        text::Renderer as _,
         widget::{Operation, Tree, tree},
     },
     keyboard::{Event::KeyPressed, Key::Named, key::Named as Key},
     touch,
-    widget::{TextInput, overlay::menu, text_input},
+    widget::{overlay::menu, text_input},
 };
 
 use super::Message;
-use crate::ui::style::pick_lists;
+use crate::ui::{
+    components::text_input::{State as InputState, TextInput},
+    style::pick_lists,
+};
 
 const MENU_HEIGHT: f32 = 200.0;
 const MENU_LINE_HEIGHT: Pixels = Pixels(19.5);
@@ -21,8 +24,6 @@ const MENU_PADDING: Padding = Padding {
     bottom: 8.0,
     left: 10.0,
 };
-type InputState = text_input::State<<Renderer as TextRenderer>::Paragraph>;
-
 pub(super) struct RepositoryInput<'a> {
     input: TextInput<'a, Message>,
     on_focus: bool,
@@ -165,8 +166,7 @@ impl Widget<Message, Theme, Renderer> for RepositoryInput<'_> {
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        self.input
-            .layout(&mut tree.children[0], renderer, limits, None)
+        self.input.layout(&mut tree.children[0], renderer, limits)
     }
 
     fn operate(

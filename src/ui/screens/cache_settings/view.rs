@@ -3,7 +3,6 @@ use iced::{
     Center, Color, Element, Fill,
     widget::{
         Column, Text, button, column, pick_list, rich_text, row, scrollable, space, span, text,
-        text_input,
     },
 };
 
@@ -11,8 +10,9 @@ use crate::{
     attic::{self, FailureKind, Metadata, Stage, TokenError, ValidationError},
     i18n::I18n,
     ui::{
+        components::text_input::text_input,
         modal,
-        style::{buttons, colors, inputs, pick_lists, spacing},
+        style::{buttons, colors, pick_lists, spacing},
     },
 };
 
@@ -171,10 +171,7 @@ impl State {
         let submit = can_connect.then_some(Message::Connect);
         let url = text_input("https://cache.example.org", &self.url)
             .on_input_maybe(editing.then_some(Message::UrlChanged))
-            .on_submit_maybe(submit.clone())
-            .size(15)
-            .padding([8, 10])
-            .style(inputs::input);
+            .on_submit_maybe(submit.clone());
         let url_hint = if valid_url.as_ref().is_some_and(|url| url.scheme() == "http") {
             Some(note(i18n, "cache-settings-http", colors::WARNING))
         } else if valid_url.is_none() && !self.url.trim().is_empty() {
@@ -184,18 +181,12 @@ impl State {
         };
         let name = text_input(attic::DEFAULT_SERVER_NAME, &self.server_name)
             .on_input_maybe(editing.then_some(Message::ServerNameChanged))
-            .on_submit_maybe(submit.clone())
-            .size(15)
-            .padding([8, 10])
-            .style(inputs::input);
+            .on_submit_maybe(submit.clone());
         let token_placeholder = if saved.is_some() { "***" } else { "" };
         let token_input = text_input(token_placeholder, &self.token)
             .secure(true)
             .on_input_maybe(editing.then_some(Message::TokenChanged))
-            .on_submit_maybe(submit)
-            .size(15)
-            .padding([8, 10])
-            .style(inputs::input);
+            .on_submit_maybe(submit);
 
         let cache_input: Element<'_, Message> = if editing && !caches.is_empty() {
             pick_list(caches, selected, Message::CacheSelected)
@@ -218,9 +209,6 @@ impl State {
                 &i18n.text("cache-settings-select-cache"),
                 displayed.map_or("", String::as_str),
             )
-            .size(15)
-            .padding([8, 10])
-            .style(inputs::input)
             .into()
         };
 

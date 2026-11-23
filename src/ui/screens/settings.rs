@@ -7,10 +7,7 @@ use fluent_bundle::FluentArgs;
 use iced::{
     Center, Element, Fill,
     task::Handle,
-    widget::{
-        Column, Row, TextInput, button, column, pick_list, row, scrollable, space, text,
-        text_input, tooltip,
-    },
+    widget::{Column, Row, button, column, pick_list, row, scrollable, space, text, tooltip},
 };
 
 use crate::{
@@ -21,8 +18,9 @@ use crate::{
     git::{self, Branch, RemoteBranchesError, RemoteRefs},
     i18n::{I18n, LanguagePreference},
     ui::{
+        components::text_input::text_input,
         modal,
-        style::{buttons, colors, containers, inputs, pick_lists, spacing},
+        style::{buttons, colors, containers, pick_lists, spacing},
     },
 };
 
@@ -378,7 +376,7 @@ impl State {
             .on_submit_maybe(submit.clone());
         let mut token = field(
             i18n.text("settings-token"),
-            RepositoryInput::new(styled_input(token), editing).into_element(),
+            RepositoryInput::new(token, editing).into_element(),
         )
         .push(
             text(i18n.text("settings-token-hint"))
@@ -410,7 +408,7 @@ impl State {
         )
         .on_input_maybe(branch_editing.then_some(Message::BranchChanged))
         .on_submit_maybe(submit.clone());
-        let mut branch_input = RepositoryInput::new(styled_input(branch), branch_editing);
+        let mut branch_input = RepositoryInput::new(branch, branch_editing);
         if branch_editing && self.git_available {
             branch_input =
                 branch_input.branches(&self.draft.branch, &self.branch_names, self.auto_branch);
@@ -455,11 +453,11 @@ impl State {
         .spacing(spacing::LG);
         let repository = column![
             text(i18n.text("settings-repository-section")).size(18),
-            field(i18n.text("settings-repository"), styled_input(repository)),
+            field(i18n.text("settings-repository"), repository),
             token,
             field(
                 i18n.text("settings-path"),
-                RepositoryInput::new(styled_input(path), editing).into_element()
+                RepositoryInput::new(path, editing).into_element()
             )
             .push(
                 text(i18n.text("settings-path-hint"))
@@ -469,7 +467,7 @@ impl State {
             branch,
             field(
                 i18n.text("settings-flake-directory"),
-                RepositoryInput::new(styled_input(flake_directory), editing).into_element(),
+                RepositoryInput::new(flake_directory, editing).into_element(),
             )
             .push(
                 text(i18n.text("settings-flake-directory-hint"))
@@ -617,9 +615,6 @@ fn select_field<'a, T: Clone + PartialEq + 'a>(
     } else {
         text_input("", selected.as_ref().map_or("", |option| &option.label))
             .width(width)
-            .size(15)
-            .padding([8, 10])
-            .style(inputs::input)
             .into()
     };
 
@@ -632,10 +627,6 @@ fn same_repository(first: &str, second: &str) -> bool {
     let first = first.strip_suffix(".git").unwrap_or(first);
     let second = second.strip_suffix(".git").unwrap_or(second);
     first.eq_ignore_ascii_case(second)
-}
-
-fn styled_input(input: TextInput<'_, Message>) -> TextInput<'_, Message> {
-    input.size(15).padding([8, 10]).style(inputs::input)
 }
 
 fn field<'a>(label: String, input: impl Into<Element<'a, Message>>) -> Column<'a, Message> {
