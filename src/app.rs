@@ -308,6 +308,7 @@ impl App {
                             self.working_copy.has_local_changes = true;
                         }
                     });
+                self.refresh_repository_status();
                 self.download = overview::DownloadStatus::Finished(result);
                 self.overview.set_download_error(&self.i18n, &self.download);
                 if let Screen::Settings(state) = &mut self.screen {
@@ -344,7 +345,10 @@ impl App {
             Message::Rebuild(event) => {
                 if let Some(run) = self.rebuild.as_mut().filter(|run| run.is_running()) {
                     match event {
-                        rebuild::Event::Inspected(status) => self.working_copy = status,
+                        rebuild::Event::Inspected(status) => {
+                            self.working_copy = status;
+                            self.refresh_repository_status();
+                        }
                         rebuild::Event::Started(step) => run.step = step,
                         rebuild::Event::Built(build) => self.built = Some(build),
                         rebuild::Event::InterruptFailed => {
@@ -381,6 +385,7 @@ impl App {
                 if generation == self.repository_generation {
                     self.checking_repository = false;
                     self.working_copy = status;
+                    self.refresh_repository_status();
                 }
             }
             Message::Loaded(result, cache, git_available, rebuild_tools) => {
@@ -396,6 +401,7 @@ impl App {
                     Ok(None) => {}
                     Err(LoadError) => self.load_error = true,
                 }
+                self.refresh_repository_status();
                 return Task::batch([self.refresh_history(), self.inspect_repository()]);
             }
             Message::CacheSettings(message) => return self.update_cache_settings(message),
@@ -498,6 +504,7 @@ impl App {
                     self.overview
                         .set_rebuild_error(&self.i18n, self.rebuild.as_ref());
                     self.working_copy = git::WorkingCopy::default();
+                    self.refresh_repository_status();
                     self.invalidate_repository_check();
                     return self.inspect_repository();
                 }
@@ -517,6 +524,7 @@ impl App {
 
     fn set_language(&mut self, language: LanguagePreference) {
         if self.i18n.set_language(language) {
+            self.refresh_repository_status();
             self.overview.set_download_error(&self.i18n, &self.download);
             self.overview
                 .set_rebuild_error(&self.i18n, self.rebuild.as_ref());
@@ -524,6 +532,13 @@ impl App {
             {
                 state.set_targets(&self.i18n, &snapshot.targets);
             }
+        }
+    }
+
+    fn refresh_repository_status(&mut self) {
+        if let Some(config) = &self.config {
+            self.overview
+                .set_repository_status(&self.i18n, &self.working_copy, &config.branch);
         }
     }
 
@@ -912,7 +927,6 @@ impl App {
         let repository = self.config.as_ref().and_then(|config| {
             config.repository_path().map(|path| overview::Repository {
                 path: config::display_repo_path(path, self.home.as_deref()),
-                selected_branch: &config.branch,
                 git_available: self.git_available,
                 rebuild_tools: self.rebuild_tools,
                 working_copy: &self.working_copy,

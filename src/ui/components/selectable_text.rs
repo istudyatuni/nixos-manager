@@ -1,8 +1,13 @@
 use iced::{
-    Color, Element, Font,
+    Color, Element, Font, Pixels, Size,
+    advanced::{
+        graphics::text::Paragraph,
+        text::{self as advanced_text, Paragraph as _, highlighter::PlainText},
+    },
+    alignment,
     widget::{
         text,
-        text_editor::{self, Action, Binding, Content},
+        text_editor::{Action, Binding, Content, TextEditor},
     },
 };
 
@@ -15,7 +20,68 @@ pub fn view<'a, Message: Clone + 'a>(
     color: Color,
     on_action: impl Fn(Action) -> Message + 'a,
 ) -> Element<'a, Message> {
-    text_editor::TextEditor::new(content)
+    editor(content, font, size, color, on_action).into()
+}
+
+/// A selectable label that shrinks to its text so it can be centered by its parent.
+pub struct Label {
+    content: Content,
+    size: u32,
+    width: f32,
+}
+
+impl Label {
+    pub fn new(size: u32) -> Self {
+        Self {
+            content: Content::new(),
+            size,
+            width: 0.0,
+        }
+    }
+
+    pub fn set_text(&mut self, text: &str) {
+        if self.content.text() == text {
+            return;
+        }
+        self.content = Content::with_text(text);
+        self.width = Paragraph::with_text(advanced_text::Text {
+            content: text,
+            bounds: Size::new(f32::INFINITY, f32::INFINITY),
+            size: Pixels(self.size as f32),
+            line_height: advanced_text::LineHeight::default(),
+            font: Font::DEFAULT,
+            align_x: advanced_text::Alignment::Default,
+            align_y: alignment::Vertical::Top,
+            shaping: advanced_text::Shaping::Advanced,
+            wrapping: advanced_text::Wrapping::None,
+        })
+        .min_width()
+        .ceil();
+    }
+
+    pub fn perform(&mut self, action: Action) {
+        self.content.perform(action);
+    }
+
+    pub fn view<'a, Message: Clone + 'a>(
+        &'a self,
+        color: Color,
+        on_action: impl Fn(Action) -> Message + 'a,
+    ) -> Element<'a, Message> {
+        editor(&self.content, Font::DEFAULT, self.size, color, on_action)
+            .width(self.width)
+            .into()
+    }
+}
+
+fn editor<'a, Message: Clone + 'a>(
+    content: &'a Content,
+    font: Font,
+    size: u32,
+    color: Color,
+    on_action: impl Fn(Action) -> Message + 'a,
+) -> TextEditor<'a, PlainText, Message> {
+    TextEditor::new(content)
         .font(font)
         .size(size)
         .padding(0)
@@ -34,5 +100,4 @@ pub fn view<'a, Message: Clone + 'a>(
                 )
             })
         })
-        .into()
 }

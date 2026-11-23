@@ -1,13 +1,23 @@
+use std::borrow::Cow;
+
+use fluent_bundle::FluentArgs;
 use iced::{
     Color, Element, Font,
     widget::text_editor::{Action, Content},
 };
 
 use super::{DownloadStatus, Message, download_status_parts, journal};
-use crate::{command_runner::LogLine, i18n::I18n, rebuild::Run, ui::components::selectable_text};
+use crate::{
+    command_runner::LogLine, git::WorkingCopy, i18n::I18n, rebuild::Run,
+    ui::components::selectable_text,
+};
+
+const REPOSITORY_STATUS_SIZE: u32 = 14;
 
 #[derive(Clone, Copy)]
 pub enum Target {
+    WorkingCopy,
+    PendingCheckout,
     RebuildError,
     DownloadError,
     DownloadDetail,
@@ -16,6 +26,8 @@ pub enum Target {
 pub struct State {
     pub journal_expanded: bool,
     pub(super) journal: journal::Output,
+    pub(super) working_copy: selectable_text::Label,
+    pub(super) pending_checkout: Option<selectable_text::Label>,
     pub rebuild_error: Content,
     pub download_error: Content,
     pub download_detail: Content,
@@ -26,6 +38,8 @@ impl Default for State {
         Self {
             journal_expanded: true,
             journal: journal::Output::default(),
+            working_copy: selectable_text::Label::new(REPOSITORY_STATUS_SIZE),
+            pending_checkout: None,
             rebuild_error: Content::new(),
             download_error: Content::new(),
             download_detail: Content::new(),
@@ -39,12 +53,48 @@ impl State {
             return;
         }
 
-        let content = match target {
-            Target::RebuildError => &mut self.rebuild_error,
-            Target::DownloadError => &mut self.download_error,
-            Target::DownloadDetail => &mut self.download_detail,
-        };
-        content.perform(action);
+        match target {
+            Target::WorkingCopy => self.working_copy.perform(action),
+            Target::PendingCheckout => {
+                if let Some(label) = &mut self.pending_checkout {
+                    label.perform(action);
+                }
+            }
+            Target::RebuildError => self.rebuild_error.perform(action),
+            Target::DownloadError => self.download_error.perform(action),
+            Target::DownloadDetail => self.download_detail.perform(action),
+        }
+    }
+
+    pub fn set_repository_status(
+        &mut self,
+        i18n: &I18n,
+        working_copy: &WorkingCopy,
+        selected_branch: &str,
+    ) {
+        let branch = working_copy.branch.as_deref();
+        let commit = working_copy.commit.as_deref();
+        let selected_commit = working_copy.selected_commit.as_deref();
+        self.working_copy.set_text(&repository_status(
+            i18n,
+            "overview-repository-working-copy",
+            branch,
+            commit,
+            working_copy.has_local_changes,
+        ));
+        if branch != Some(selected_branch) || commit.is_none() || commit != selected_commit {
+            self.pending_checkout
+                .get_or_insert_with(|| selectable_text::Label::new(REPOSITORY_STATUS_SIZE))
+                .set_text(&repository_status(
+                    i18n,
+                    "overview-repository-pending",
+                    Some(selected_branch),
+                    selected_commit,
+                    false,
+                ));
+        } else {
+            self.pending_checkout = None;
+        }
     }
 
     pub fn has_journal(&self) -> bool {
@@ -81,6 +131,42 @@ impl State {
             self.download_detail = Content::new();
         }
     }
+}
+
+fn repository_status(
+    i18n: &I18n,
+    key: &str,
+    branch: Option<&str>,
+    commit: Option<&str>,
+    dirty: bool,
+) -> String {
+    let mut args = FluentArgs::new();
+    let state = if dirty {
+        "dirty"
+    } else if branch.is_none() && commit.is_none() {
+        "missing"
+    } else {
+        "clean"
+    };
+    args.set("state", state);
+    let branch = match branch {
+        Some(name) => {
+            args.set("name", name);
+            i18n.with_args("overview-repository-branch", &args)
+        }
+        None => i18n.text("overview-repository-detached"),
+    };
+    args.set("branch", branch);
+    args.set(
+        "commit",
+        commit.map_or_else(
+            || i18n.text("overview-repository-no-commit").into(),
+            |commit| Cow::Borrowed(commit.get(..12).unwrap_or(commit)),
+        ),
+    );
+    // Fluent isolates interpolations. Keep copied branch names and commit hashes clean.
+    i18n.with_args(key, &args)
+        .replace(['\u{2068}', '\u{2069}'], "")
 }
 
 pub fn view(
