@@ -4,6 +4,7 @@ use iced::{
     widget::{
         button, column, container, row, rule, scrollable, space, text,
         text_editor::{self, Content},
+        tooltip,
     },
 };
 
@@ -126,10 +127,18 @@ fn list<'a>(
 ) -> Element<'a, Message> {
     let actions = row![
         space().width(Fill),
-        button(text(i18n.text("history-refresh")))
-            .padding([7, 12])
-            .style(buttons::secondary)
-            .on_press_maybe(snapshot.is_some().then_some(Message::Refresh)),
+        tooltip(
+            button(text(i18n.text("history-refresh")))
+                .padding([7, 12])
+                .style(buttons::secondary)
+                .on_press_maybe(snapshot.is_some().then_some(Message::Refresh)),
+            text(i18n.text("history-refresh-help"))
+                .size(13)
+                .wrapping(text::Wrapping::WordOrGlyph),
+            tooltip::Position::Top,
+        )
+        .gap(spacing::SM)
+        .style(containers::card),
         button(text(i18n.text("history-close")))
             .padding([7, 12])
             .style(buttons::secondary)

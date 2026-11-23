@@ -1,5 +1,6 @@
 history-title = Build History
 history-refresh = Refresh
+history-refresh-help = Reload build history and the list of NixOS system generations
 history-close = Close
 history-back = Back
 history-loading = Loading system configurations…
