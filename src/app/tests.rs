@@ -234,7 +234,7 @@ async fn settings_request_remote_branches_when_the_branch_picker_opens() {
 async fn cache_settings_show_the_expiration_and_actions_in_order() {
     let metadata = attic::Metadata {
         cache_name: "main".into(),
-        cache_expiration: "2026-02-07T14:30:45Z".parse().unwrap(),
+        cache_expiration: "2026-07-07T00:30:45Z".parse().unwrap(),
         server_url: "https://cache.example.org/".into(),
         server_name: "private".into(),
     };
@@ -242,16 +242,18 @@ async fn cache_settings_show_the_expiration_and_actions_in_order() {
     app.screen = Screen::CacheSettings(Box::new(cache_settings::State::new(Some(&metadata), true)));
     let renderer = headless().await;
     let size = Size::new(800.0, 1000.0);
-    for (language, expected) in [
-        (LanguagePreference::English, "2/7/2026, 2:30:45 PM UTC"),
-        (LanguagePreference::Russian, "07.02.2026, 14:30:45 UTC"),
+    let expiration_local = metadata.cache_expiration.with_timezone(&chrono::Local);
+    for (language, pattern) in [
+        (LanguagePreference::English, "%-m/%-d/%Y, %-I:%M:%S %p"),
+        (LanguagePreference::Russian, "%d.%m.%Y, %H:%M:%S"),
     ] {
         app.set_language(language);
         let labels = layout(&mut app.view(), &renderer, size).2;
+        let expected = expiration_local.format(pattern).to_string();
         let expiration = labels
             .text
             .iter()
-            .find(|(label, _)| label.contains(expected))
+            .find(|(label, _)| label.contains(&expected))
             .unwrap()
             .1;
         let update = labels.bounds(&app.i18n.text("cache-settings-update"));
@@ -501,7 +503,7 @@ async fn build_history_copies_paths_generations_and_build_details() {
     let size = Size::new(800.0, 540.0);
     let store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-nixos-system";
     let revision = "0123456789abcdef0123456789abcdef01234567";
-    let build = serde_json::from_value(serde_json::json!({
+    let build: history::Build = serde_json::from_value(serde_json::json!({
         "id": "gen-build",
         "gc_root": "builds/gen-build/result",
         "store_path": store_path,
@@ -509,6 +511,12 @@ async fn build_history_copies_paths_generations_and_build_details() {
         "built_at": "2026-01-02T03:04:05Z"
     }))
     .expect("build record");
+    let built_at = build
+        .built_at
+        .unwrap()
+        .with_timezone(&chrono::Local)
+        .format("%-m/%-d/%Y, %-I:%M:%S %p")
+        .to_string();
     let _ = app.update(Message::Overview(overview::Message::OpenBuildHistory));
     let mut snapshot = history::Snapshot::default();
     snapshot.targets.push(history::Target {
@@ -540,7 +548,7 @@ async fn build_history_copies_paths_generations_and_build_details() {
         vec![store_path],
         vec!["42", "selected in system profile"],
         vec!["41"],
-        vec!["1/2/2026", "3:04:05 AM UTC", "main", &revision[..8]],
+        vec![&built_at, "main", &revision[..8]],
     ]
     .into_iter()
     .enumerate()
