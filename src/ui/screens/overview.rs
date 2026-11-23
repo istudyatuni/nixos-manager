@@ -345,7 +345,6 @@ fn repository_status(
         ),
     );
     text(i18n.with_args(key, &args))
-        .font(Font::MONOSPACE)
         .size(14)
         .color(if dirty {
             colors::WARNING
