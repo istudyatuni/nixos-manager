@@ -653,6 +653,8 @@ async fn compact_overview_keeps_actions_menu_to_the_left_of_download() {
 
 #[tokio::test]
 async fn build_history_shows_system_configurations_without_a_repository() {
+    use crate::ui::style::spacing;
+
     let mut app = boot_with_cache(Ok(None));
     let renderer = headless().await;
     let size = Size::new(800.0, 540.0);
@@ -740,7 +742,8 @@ async fn build_history_shows_system_configurations_without_a_repository() {
 
     app.set_language(LanguagePreference::Russian);
     let compact = Size::new(560.0 / 1.5, 420.0 / 1.5);
-    let labels = layout(&mut app.view(), &renderer, compact).2;
+    let mut view = app.view();
+    let labels = layout(&mut view, &renderer, compact).2;
     let (viewport, _) = labels.scroll_viewport.expect("scrollable build history");
     let last_generation = labels.focusables.last().expect("selectable generation");
     assert!(last_generation.y > viewport.y + viewport.height);
@@ -748,6 +751,99 @@ async fn build_history_shows_system_configurations_without_a_repository() {
     assert!(close.y >= viewport.y + viewport.height && close.y + close.height <= compact.height);
     for status in ["активна", "загружена"] {
         assert!(labels.contains(status));
+    }
+    let profile = labels.bounds("системный профиль");
+    let icon = labels.bounds("?");
+    assert!(profile.x + profile.width <= icon.x);
+    assert!(profile.y + profile.height <= labels.focusables[1].y);
+
+    let (mut tree, node, labels) = layout(&mut view, &renderer, size);
+    let icon = labels.bounds("?");
+    let widget = view.as_widget_mut();
+    let layout = Layout::new(&node);
+    let window = Rectangle::with_size(size);
+    assert!(
+        widget
+            .overlay(&mut tree, layout, &renderer, &window, Vector::ZERO)
+            .is_none()
+    );
+    widget.update(
+        &mut tree,
+        &Event::Mouse(mouse::Event::CursorMoved {
+            position: icon.center(),
+        }),
+        layout,
+        mouse::Cursor::Available(icon.center()),
+        &renderer,
+        &mut clipboard::Null,
+        &mut Shell::new(&mut Vec::new()),
+        &window,
+    );
+    let tooltip_text = {
+        let tip = widget
+            .overlay(&mut tree, layout, &renderer, &window, Vector::ZERO)
+            .expect("system profile tooltip on hover");
+        let mut tip = overlay::Nested::new(tip);
+        let node = tip.layout(&renderer, size);
+        let mut tooltip_labels = Labels::default();
+        tip.operate(Layout::new(&node), &renderer, &mut tooltip_labels);
+        tooltip_labels.bounds(&app.i18n.text("history-system-profile-help"))
+    };
+    let gap_offset = spacing::MD + spacing::SM / 2.0;
+    let gap_y = if tooltip_text.center_y() > icon.center_y() {
+        tooltip_text.y - gap_offset
+    } else {
+        tooltip_text.y + tooltip_text.height + gap_offset
+    };
+    let gap = Point::new(icon.center_x(), gap_y);
+    assert!(
+        !icon.contains(gap) && !tooltip_text.contains(gap),
+        "icon {icon:?}, tooltip {tooltip_text:?}, gap {gap:?}"
+    );
+    for (point, stays_open) in [
+        (gap, true),
+        (tooltip_text.center(), true),
+        (Point::ORIGIN, false),
+    ] {
+        let cursor = mouse::Cursor::Available(point);
+        let event = Event::Mouse(mouse::Event::CursorMoved { position: point });
+        let underlying_cursor = {
+            let tip = widget
+                .overlay(&mut tree, layout, &renderer, &window, Vector::ZERO)
+                .expect("tooltip stays open along the pointer's path");
+            let mut tip = overlay::Nested::new(tip);
+            let node = tip.layout(&renderer, size);
+            let tip_layout = Layout::new(&node);
+            tip.update(
+                &event,
+                tip_layout,
+                cursor,
+                &renderer,
+                &mut clipboard::Null,
+                &mut Shell::new(&mut Vec::new()),
+            );
+            if tip.mouse_interaction(tip_layout, cursor, &renderer) == mouse::Interaction::None {
+                cursor
+            } else {
+                mouse::Cursor::Unavailable
+            }
+        };
+        widget.update(
+            &mut tree,
+            &event,
+            layout,
+            underlying_cursor,
+            &renderer,
+            &mut clipboard::Null,
+            &mut Shell::new(&mut Vec::new()),
+            &window,
+        );
+        assert_eq!(
+            widget
+                .overlay(&mut tree, layout, &renderer, &window, Vector::ZERO)
+                .is_some(),
+            stays_open
+        );
     }
 }
 
@@ -815,7 +911,7 @@ async fn build_history_copies_paths_generations_and_build_details() {
 
     for (index, fragments) in [
         vec![store_path],
-        vec!["42", "selected in system profile"],
+        vec!["generation", "42"],
         vec!["41"],
         vec![&built_at, "main", &revision[..8]],
     ]

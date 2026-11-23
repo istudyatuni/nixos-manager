@@ -11,7 +11,7 @@ use crate::{
     i18n::I18n,
     rebuild,
     ui::{
-        components::menu,
+        components::{menu, popup},
         style::{buttons, colors, containers, inputs, spacing},
     },
 };
@@ -201,7 +201,7 @@ fn actions_menu<'a>(i18n: &I18n, state: &State, enabled: bool) -> Element<'a, Me
     .on_press_maybe(enabled.then_some(Message::OpenActionsMenu));
     let panel =
         open.then(|| menu::panel([(i18n.text("history-title"), Message::OpenBuildHistory)]));
-    menu::anchored(trigger, panel, Message::CloseActionsMenu)
+    popup::on_click(trigger, panel, Message::CloseActionsMenu)
 }
 
 fn configured<'a>(

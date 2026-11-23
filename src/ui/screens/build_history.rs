@@ -1,8 +1,8 @@
 use fluent_bundle::FluentArgs;
 use iced::{
-    Center, Color, Element, Fill, Font, Shrink,
+    Center, Element, Fill, Font, Shrink, border,
     widget::{
-        button, column, row, rule, scrollable, space, text,
+        button, column, container, row, rule, scrollable, space, text,
         text_editor::{self, Content},
     },
 };
@@ -14,9 +14,9 @@ use crate::{
         history::{Build, Snapshot, Source, Target},
     },
     ui::{
-        components::selectable_text,
+        components::{popup, selectable_text},
         modal,
-        style::{buttons, colors, spacing},
+        style::{buttons, colors, containers, spacing},
     },
 };
 
@@ -33,6 +33,7 @@ pub enum Message {
 #[derive(Clone, Copy)]
 pub enum TextTarget {
     Path(usize),
+    ProfileGeneration(usize),
     Note(usize, usize),
     Confirmation,
 }
@@ -68,11 +69,14 @@ impl State {
             Message::SelectText(target, action) if !action.is_edit() => {
                 let content = match target {
                     TextTarget::Path(row) => self.rows.get_mut(row).map(|row| &mut row.path),
+                    TextTarget::ProfileGeneration(row) => self
+                        .rows
+                        .get_mut(row)
+                        .and_then(|row| row.profile_generation.as_mut()),
                     TextTarget::Note(row, note) => self
                         .rows
                         .get_mut(row)
-                        .and_then(|row| row.notes.get_mut(note))
-                        .map(|note| &mut note.content),
+                        .and_then(|row| row.notes.get_mut(note)),
                     TextTarget::Confirmation => self.selection.as_mut().map(|(_, path)| path),
                 };
                 if let Some(content) = content {
@@ -185,55 +189,43 @@ fn list<'a>(
 
 struct TargetText {
     path: Content,
-    notes: Vec<Note>,
-}
-
-struct Note {
-    content: Content,
-    color: Color,
+    profile_generation: Option<Content>,
+    notes: Vec<Content>,
 }
 
 impl TargetText {
     fn new(i18n: &I18n, target: &Target) -> Self {
         let mut notes = Vec::new();
-        if let Some(number) = target.selected_generation {
-            notes.push(Note {
-                content: Content::with_text(&generation_label(
-                    i18n,
-                    "history-selected-generation",
-                    number,
-                )),
-                color: colors::INFO,
-            });
-        }
         let other_generations = target
             .generations
             .iter()
             .copied()
             .filter(|number| Some(*number) != target.selected_generation)
-            .map(|number| generation_label(i18n, "history-generation", number))
+            .map(|number| generation_label(i18n, number))
             .collect::<Vec<_>>();
         if !other_generations.is_empty() {
-            notes.push(Note {
-                content: Content::with_text(&other_generations.join(" · ")),
-                color: colors::TEXT_MUTED,
-            });
+            notes.push(Content::with_text(&other_generations.join(" · ")));
         }
-        notes.extend(target.builds.iter().map(|build| Note {
-            content: Content::with_text(&build_label(i18n, build)),
-            color: colors::TEXT_MUTED,
-        }));
+        notes.extend(
+            target
+                .builds
+                .iter()
+                .map(|build| Content::with_text(&build_label(i18n, build))),
+        );
         Self {
             path: Content::with_text(&target.store_path.to_string_lossy()),
+            profile_generation: target
+                .selected_generation
+                .map(|number| Content::with_text(&generation_label(i18n, number))),
             notes,
         }
     }
 }
 
-fn generation_label(i18n: &I18n, key: &str, number: u64) -> String {
+fn generation_label(i18n: &I18n, number: u64) -> String {
     let mut args = FluentArgs::new();
     args.set("number", number.to_string());
-    i18n.with_args(key, &args)
+    i18n.with_args("history-generation", &args)
 }
 
 fn target_row<'a>(
@@ -255,11 +247,6 @@ fn target_row<'a>(
     let badges = [
         (target.active, "history-active", colors::SUCCESS),
         (target.booted, "history-booted", colors::INFO),
-        (
-            target.profile_selected && target.selected_generation.is_none(),
-            "history-in-profile",
-            colors::INFO,
-        ),
     ];
     let statuses = row(badges
         .into_iter()
@@ -270,12 +257,20 @@ fn target_row<'a>(
     if badges.iter().any(|(show, _, _)| *show) {
         details = details.push(statuses);
     }
+    if target.profile_selected {
+        let generation = labels.profile_generation.as_ref().map(|content| {
+            selectable_text::view(content, Font::DEFAULT, 13, colors::INFO, move |action| {
+                Message::SelectText(TextTarget::ProfileGeneration(index), action)
+            })
+        });
+        details = details.push(column![profile_caption(i18n), generation].spacing(spacing::SM));
+    }
     for (line, note) in labels.notes.iter().enumerate() {
         details = details.push(selectable_text::view(
-            &note.content,
+            note,
             Font::DEFAULT,
             13,
-            note.color,
+            colors::TEXT_MUTED,
             move |action| Message::SelectText(TextTarget::Note(index, line), action),
         ));
     }
@@ -291,6 +286,39 @@ fn target_row<'a>(
     ]
     .spacing(spacing::MD)
     .align_y(Center)
+    .into()
+}
+
+fn profile_caption(i18n: &I18n) -> Element<'static, Message> {
+    const ICON_SIZE: f32 = 16.0;
+    let icon = container(text("?").size(11).color(colors::INFO))
+        .center(ICON_SIZE)
+        .style(|_| {
+            container::Style::default().border(
+                border::rounded(ICON_SIZE / 2.0)
+                    .width(1)
+                    .color(colors::INFO),
+            )
+        });
+    let help = popup::on_hover(
+        icon,
+        container(
+            text(i18n.text("history-system-profile-help"))
+                .size(13)
+                .width(240)
+                .wrapping(text::Wrapping::WordOrGlyph),
+        )
+        .padding(spacing::MD)
+        .style(containers::card),
+    );
+    row![
+        text(i18n.text("history-system-profile"))
+            .size(13)
+            .color(colors::INFO),
+        help,
+    ]
+    .align_y(Center)
+    .spacing(spacing::SM)
     .into()
 }
 
