@@ -1,4 +1,5 @@
 use std::{
+    env,
     ffi::{OsStr, OsString},
     io,
     os::unix::ffi::OsStrExt,
@@ -19,7 +20,7 @@ use crate::{
 };
 
 const PKEXEC: &str = "/run/wrappers/bin/pkexec";
-const NIX: &str = "/run/current-system/sw/bin/nix";
+const NIX: &str = "nix";
 const NIX_STORE: &str = "/run/current-system/sw/bin/nix-store";
 
 mod apply;
@@ -70,7 +71,9 @@ pub struct Tools {
 impl Tools {
     pub fn detect() -> Self {
         Self {
-            nix: executable(Path::new(NIX)),
+            nix: env::var_os("PATH").is_some_and(|path| {
+                env::split_paths(&path).any(|directory| executable(&directory.join(NIX)))
+            }),
             pkexec: executable(Path::new(PKEXEC)),
             apply_helper: apply::helper_path().is_some(),
             nix_env: executable(Path::new(NIX_ENV)),
