@@ -15,10 +15,10 @@ use crate::{
     config::{self, Config, DEFAULT_UI_SCALE, LoadError, SaveError},
     git,
     i18n::{I18n, LanguagePreference},
-    rebuild,
+    rebuild::{self, history},
     ui::{
         modal,
-        screens::{Screen, cache_settings, overview, settings},
+        screens::{Screen, build_history, cache_settings, overview, settings},
         style::{self, buttons, containers, spacing},
     },
 };
@@ -43,6 +43,9 @@ pub struct App {
     download: overview::DownloadStatus,
     rebuild: Option<rebuild::Run>,
     built: Option<Arc<rebuild::Build>>,
+    history: Option<history::Snapshot>,
+    history_generation: u64,
+    history_refreshing: bool,
     rebuild_interrupt: Option<mpsc::Sender<()>>,
     pending_close: Option<window::Id>,
     overview: overview::State,
@@ -57,10 +60,13 @@ pub enum Message {
     WindowCloseRequested(window::Id),
     OpenSettings,
     OpenCacheSettings,
+    BuildHistory(build_history::Message),
+    HistoryLoaded(u64, history::Snapshot),
     Overview(overview::Message),
     CacheSettings(cache_settings::Message),
     Settings(settings::Message),
-    FocusSettingsInput(bool),
+    FocusDialogInput(bool),
+    DismissDialog,
     SettingsLocalBranches(u64, Vec<git::Branch>),
     SettingsRemoteRefs(u64, Result<git::RemoteRefs, git::RemoteBranchesError>),
     Loaded(
@@ -99,6 +105,9 @@ impl App {
             download: overview::DownloadStatus::Idle,
             rebuild: None,
             built: None,
+            history: None,
+            history_generation: 0,
+            history_refreshing: false,
             rebuild_interrupt: None,
             pending_close: None,
             overview: overview::State::default(),
@@ -170,7 +179,7 @@ impl App {
 
     pub fn scale_factor(&self) -> f32 {
         let scale = match &self.screen {
-            Screen::Overview | Screen::CacheSettings(_) => self
+            Screen::Overview | Screen::CacheSettings(_) | Screen::BuildHistory(_) => self
                 .config
                 .as_ref()
                 .map_or(DEFAULT_UI_SCALE, |config| config.ui_scale),
@@ -182,7 +191,8 @@ impl App {
     pub fn subscription(&self) -> Subscription<Message> {
         let close = window::close_requests().map(Message::WindowCloseRequested);
         let cache = matches!(self.screen, Screen::CacheSettings(_));
-        if cache || matches!(&self.screen, Screen::Settings(state) if !state.saving()) {
+        let history = matches!(self.screen, Screen::BuildHistory(_));
+        if history || cache || matches!(&self.screen, Screen::Settings(state) if !state.saving()) {
             Subscription::batch([
                 close,
                 event::listen_with(|event, status, _| match (event, status) {
@@ -193,14 +203,14 @@ impl App {
                             ..
                         }),
                         event::Status::Ignored,
-                    ) => Some(Message::FocusSettingsInput(modifiers.shift())),
+                    ) => Some(Message::FocusDialogInput(modifiers.shift())),
                     (
                         Event::Keyboard(keyboard::Event::KeyPressed {
                             key: keyboard::Key::Named(keyboard::key::Named::Escape),
                             ..
                         }),
                         event::Status::Ignored,
-                    ) => Some(Message::CacheSettings(cache_settings::Message::Close)),
+                    ) => Some(Message::DismissDialog),
                     _ => None,
                 }),
             ])
@@ -214,6 +224,30 @@ impl App {
             Message::WindowCloseRequested(id) => {
                 self.pending_close = Some(id);
                 return self.finish_pending_close();
+            }
+            Message::Overview(overview::Message::OpenBuildHistory)
+                if !self.loading && !self.is_busy() && matches!(self.screen, Screen::Overview) =>
+            {
+                self.screen = Screen::BuildHistory(build_history::State::default());
+                return self.refresh_history();
+            }
+            Message::BuildHistory(message) => return self.update_history(message),
+            Message::HistoryLoaded(generation, snapshot)
+                if generation == self.history_generation =>
+            {
+                if !snapshot.unavailable
+                    && self
+                        .built
+                        .as_ref()
+                        .is_some_and(|build| !snapshot.contains_build(build))
+                {
+                    self.built = None;
+                }
+                if let Screen::BuildHistory(state) = &mut self.screen {
+                    state.set_targets(&self.i18n, &snapshot.targets);
+                }
+                self.history = Some(snapshot);
+                self.history_refreshing = false;
             }
             Message::OpenCacheSettings
                 if !self.loading && matches!(self.screen, Screen::Overview) =>
@@ -321,7 +355,7 @@ impl App {
                             }
                         }
                         rebuild::Event::Finished(outcome) => {
-                            if matches!(outcome, Err(rebuild::Error::BuildResult)) {
+                            if !run.ready && matches!(outcome, Err(rebuild::Error::BuildResult)) {
                                 self.built = None;
                             }
                             run.outcome = Some(outcome);
@@ -332,7 +366,13 @@ impl App {
                                 return window::close(id);
                             }
                             self.overview.set_rebuild_error(&self.i18n, Some(run));
-                            return self.inspect_repository();
+                            let repository = !run.ready;
+                            let history = self.refresh_history();
+                            return if repository {
+                                Task::batch([history, self.inspect_repository()])
+                            } else {
+                                history
+                            };
                         }
                     }
                 }
@@ -356,7 +396,7 @@ impl App {
                     Ok(None) => {}
                     Err(LoadError) => self.load_error = true,
                 }
-                return self.inspect_repository();
+                return Task::batch([self.refresh_history(), self.inspect_repository()]);
             }
             Message::CacheSettings(message) => return self.update_cache_settings(message),
             Message::CacheConnected(result) => {
@@ -403,9 +443,19 @@ impl App {
                     }
                 }
             }
-            Message::FocusSettingsInput(reverse) => {
+            Message::DismissDialog => match self.screen {
+                Screen::BuildHistory(_) => {
+                    return self.update_history(build_history::Message::Close);
+                }
+                Screen::CacheSettings(_) => {
+                    return self.update_cache_settings(cache_settings::Message::Close);
+                }
+                _ => {}
+            },
+            Message::FocusDialogInput(reverse) => {
                 if matches!(&self.screen, Screen::Settings(state) if !state.saving())
                     || matches!(&self.screen, Screen::CacheSettings(state) if !state.busy())
+                    || matches!(self.screen, Screen::BuildHistory(_))
                 {
                     return if reverse {
                         operation::focus_previous()
@@ -457,7 +507,10 @@ impl App {
                     }
                 }
             },
-            Message::OpenSettings | Message::OpenCacheSettings => {}
+            Message::OpenSettings
+            | Message::OpenCacheSettings
+            | Message::Overview(overview::Message::OpenBuildHistory)
+            | Message::HistoryLoaded(_, _) => {}
         }
         Task::none()
     }
@@ -467,6 +520,10 @@ impl App {
             self.overview.set_download_error(&self.i18n, &self.download);
             self.overview
                 .set_rebuild_error(&self.i18n, self.rebuild.as_ref());
+            if let (Screen::BuildHistory(state), Some(snapshot)) = (&mut self.screen, &self.history)
+            {
+                state.set_targets(&self.i18n, &snapshot.targets);
+            }
         }
     }
 
@@ -555,6 +612,64 @@ impl App {
                 },
                 Message::CacheGuideOpened,
             ),
+        }
+    }
+
+    fn can_activate_history(&self) -> bool {
+        !self.is_busy()
+            && self
+                .history
+                .as_ref()
+                .is_some_and(|snapshot| !snapshot.unavailable)
+            && self
+                .rebuild_tools
+                .missing(false, rebuild::Steps::ACTIVATE)
+                .next()
+                .is_none()
+    }
+
+    fn refresh_history(&mut self) -> Task<Message> {
+        if self.history_refreshing {
+            return Task::none();
+        }
+        self.history_refreshing = true;
+        self.history = None;
+        self.history_generation += 1;
+        let generation = self.history_generation;
+        Task::perform(
+            async {
+                tokio::task::spawn_blocking(history::snapshot)
+                    .await
+                    .unwrap_or_else(|_| {
+                        let mut snapshot = history::Snapshot::default();
+                        snapshot.unavailable = true;
+                        snapshot
+                    })
+            },
+            move |snapshot| Message::HistoryLoaded(generation, snapshot),
+        )
+    }
+
+    fn update_history(&mut self, message: build_history::Message) -> Task<Message> {
+        let can_activate = self.can_activate_history();
+        let Screen::BuildHistory(state) = &mut self.screen else {
+            return Task::none();
+        };
+        match state.update(message, can_activate) {
+            build_history::Action::None => Task::none(),
+            build_history::Action::Close => {
+                self.screen = Screen::Overview;
+                Task::none()
+            }
+            build_history::Action::Refresh => self.refresh_history(),
+            build_history::Action::Activate(target) => {
+                self.screen = Screen::Overview;
+                self.start_run(
+                    rebuild::Request::Ready(target),
+                    rebuild::Steps::ACTIVATE,
+                    true,
+                )
+            }
         }
     }
 
@@ -675,19 +790,42 @@ impl App {
         let Some(config) = self.config.clone() else {
             return Task::none();
         };
+        self.start_run(
+            rebuild::Request::Repository {
+                config: Box::new(config),
+                steps,
+                cached,
+            },
+            steps,
+            needs_build,
+        )
+    }
+
+    fn start_run(
+        &mut self,
+        request: rebuild::Request,
+        steps: rebuild::Steps,
+        clear: bool,
+    ) -> Task<Message> {
         let (interrupt_request, interrupt) = mpsc::channel(1);
         self.rebuild_interrupt = Some(interrupt_request);
-        self.rebuild = Some(rebuild::Run::new(steps));
+        let ready = matches!(&request, rebuild::Request::Ready(_));
+        self.rebuild = Some(rebuild::Run::new(steps, ready));
+        self.history_generation += 1;
+        self.history_refreshing = false;
         self.overview.journal_expanded = true;
-        if needs_build {
+        if clear {
             self.clear_journal();
         }
         self.overview.set_rebuild_error(&self.i18n, None);
-        self.invalidate_repository_check();
-        let runner = self.commands.clone().with_secret(config.token.clone());
+        let mut runner = self.commands.clone();
+        if let rebuild::Request::Repository { config, .. } = &request {
+            self.invalidate_repository_check();
+            runner = runner.with_secret(config.token.clone());
+        }
         Task::run(
             stream::channel(16, async move |mut sender| {
-                let outcome = rebuild::run(&runner, &config, steps, cached, interrupt, |event| {
+                let outcome = rebuild::run(&runner, request, interrupt, |event| {
                     let mut sender = sender.clone();
                     async move {
                         let _ = sender.send(event).await;
@@ -703,7 +841,7 @@ impl App {
     fn current_build(&self) -> Option<&Arc<rebuild::Build>> {
         self.built
             .as_ref()
-            .filter(|build| build.matches(&self.working_copy))
+            .filter(|build| build.matches_worktree(&self.working_copy))
     }
 
     fn inspect_repository(&mut self) -> Task<Message> {
@@ -744,6 +882,18 @@ impl App {
     pub fn view(&self) -> Element<'_, Message> {
         let dialog = match &self.screen {
             Screen::Overview => None,
+            Screen::BuildHistory(state) => Some(
+                state
+                    .view(
+                        &self.i18n,
+                        self.history.as_ref(),
+                        self.can_activate_history(),
+                        self.rebuild_tools
+                            .missing(false, rebuild::Steps::ACTIVATE)
+                            .next(),
+                    )
+                    .map(Message::BuildHistory),
+            ),
             Screen::CacheSettings(state) => Some(
                 state
                     .view(&self.i18n, &self.cache)

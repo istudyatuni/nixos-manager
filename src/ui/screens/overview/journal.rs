@@ -107,6 +107,7 @@ pub(super) fn has_error(run: &Run) -> bool {
 pub(super) fn rebuild_status(i18n: &I18n, run: &Run) -> (String, Color) {
     let mut args = FluentArgs::new();
     let step = match run.step {
+        Step::History => "overview-rebuild-step-history",
         Step::Inspect => "overview-rebuild-step-inspect",
         Step::Authorize => "overview-rebuild-step-authorize",
         Step::Build => "overview-rebuild-step-build",
@@ -144,9 +145,12 @@ pub(super) fn rebuild_status(i18n: &I18n, run: &Run) -> (String, Color) {
         Some(Err(Error::MissingHostname)) => ("overview-rebuild-hostname", colors::DANGER),
         Some(Err(Error::InvalidPath)) => ("overview-rebuild-invalid-path", colors::DANGER),
         Some(Err(Error::MissingFlake)) => ("overview-rebuild-missing-flake", colors::DANGER),
-        Some(Err(Error::BuildDirectory)) => ("overview-rebuild-build-directory", colors::DANGER),
         Some(Err(Error::BuildResult)) => ("overview-rebuild-build-result", colors::DANGER),
         Some(Err(Error::BuildOutdated)) => ("overview-rebuild-build-outdated", colors::DANGER),
+        Some(Err(Error::History)) => ("overview-rebuild-history-error", colors::DANGER),
+        Some(Err(Error::TargetUnavailable)) => {
+            ("overview-rebuild-target-unavailable", colors::DANGER)
+        }
     };
     (i18n.with_args(key, &args), color)
 }

@@ -10,14 +10,12 @@
 use std::{
     env,
     ffi::OsStr,
-    fs,
     io::{self, BufRead, Read, Write},
     os::unix::{
         ffi::OsStrExt,
-        fs::PermissionsExt,
         process::{CommandExt, ExitStatusExt},
     },
-    path::{Path, PathBuf},
+    path::Path,
     process::{Command, ExitCode, Stdio},
     sync::{
         Arc,
@@ -26,7 +24,7 @@ use std::{
 };
 
 use nixos_manager_apply_protocol::{
-    APPLY, Mode, NIX_ENV, READY, REGISTERED, STORE, SWITCH, SYSTEM_PROFILE,
+    APPLY, Mode, NIX_ENV, READY, REGISTERED, SYSTEM_PROFILE, system_script,
 };
 use signal_hook::{consts::SIGINT, flag};
 
@@ -123,34 +121,4 @@ fn write_marker(marker: &[u8]) -> io::Result<()> {
     output.write_all(marker)?;
     output.write_all(b"\n")?;
     output.flush()
-}
-
-fn system_script(system: &Path) -> io::Result<PathBuf> {
-    let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "invalid NixOS system output");
-    let name = system.file_name().ok_or_else(invalid)?.as_bytes();
-    let (hash, name) = name.split_at_checked(32).ok_or_else(invalid)?;
-    let name = name.strip_prefix(b"-").ok_or_else(invalid)?;
-    if system.parent() != Some(Path::new(STORE))
-        || !hash
-            .iter()
-            .all(|byte| b"0123456789abcdfghijklmnpqrsvwxyz".contains(byte))
-        || name.is_empty()
-        || !name
-            .iter()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"+._?=-".contains(byte))
-        || fs::canonicalize(system)? != system
-        || !system.join("nixos-version").is_file()
-    {
-        return Err(invalid());
-    }
-
-    let script = fs::canonicalize(system.join(SWITCH))?;
-    let metadata = fs::metadata(&script)?;
-    if !script.starts_with(STORE)
-        || !metadata.is_file()
-        || metadata.permissions().mode() & 0o111 == 0
-    {
-        return Err(invalid());
-    }
-    Ok(script)
 }

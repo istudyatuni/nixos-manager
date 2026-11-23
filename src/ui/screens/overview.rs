@@ -32,6 +32,7 @@ pub enum Message {
     SetActivate(bool),
     Download,
     Rebuild,
+    OpenBuildHistory,
     InterruptRebuild,
     ToggleJournal,
     CopyJournal,
@@ -105,6 +106,16 @@ pub fn view<'a>(
         let compact = size.width < COMPACT_WIDTH || size.height < COMPACT_HEIGHT;
         let controls = controls(i18n, repository.as_ref(), loading, load_error, state);
         let controls = container(controls).width(Fill).max_width(CARD_WIDTH);
+        let history = (!loading).then(|| {
+            let busy = repository
+                .as_ref()
+                .is_some_and(|repository| repository.busy)
+                || rebuild.is_some_and(rebuild::Run::is_running);
+            button(text(i18n.text("history-title")))
+                .padding([7, 12])
+                .style(buttons::secondary)
+                .on_press_maybe((!busy).then_some(Message::OpenBuildHistory))
+        });
         let mut journal = container(journal::view(i18n, rebuild, state))
             .width(Fill)
             .max_width(OUTPUT_WIDTH);
@@ -116,6 +127,7 @@ pub fn view<'a>(
             column![]
                 .push(cache_notice.as_ref().map(|notice| notice.view(i18n)))
                 .push(controls)
+                .push(history)
                 .push(journal)
                 .width(Fill)
                 .spacing(spacing::LG)

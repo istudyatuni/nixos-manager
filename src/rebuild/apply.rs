@@ -60,6 +60,7 @@ pub(super) async fn apply<F: Future<Output = ()> + Send>(
     path: &Path,
     interrupt: &mut mpsc::Receiver<()>,
     emit: &mut (impl FnMut(Event) -> F + Send),
+    on_registered: impl FnOnce() -> Result<(), Error> + Send,
 ) -> Result<(), Error> {
     let transfer = async {
         let mut input = path.as_os_str().as_bytes().to_vec();
@@ -80,6 +81,7 @@ pub(super) async fn apply<F: Future<Output = ()> + Send>(
             {
                 return Ok(false);
             }
+            on_registered()?;
             input.clear();
         }
 

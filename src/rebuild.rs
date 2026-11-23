@@ -1,27 +1,31 @@
 use std::{
     ffi::{OsStr, OsString},
+    io,
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
-use nixos_manager_apply_protocol::{Mode, NIX_ENV, STORE, SWITCH};
+use nixos_manager_apply_protocol::{Mode, NIX_ENV, system_script};
 use rustix::fs::{Access, access};
-use tempfile::TempDir;
 use tokio::{fs, process::Command, sync::mpsc};
 use url::Url;
 
 use crate::{
-    command_runner::{CommandRunner, RunError},
+    command_runner::{CommandRunner, RunError, RunningCommand},
     config::Config,
     git::{self, WorkingCopy},
 };
 
 const PKEXEC: &str = "/run/wrappers/bin/pkexec";
 const NIX: &str = "/run/current-system/sw/bin/nix";
-const OUT_LINK: &str = "result";
+const NIX_STORE: &str = "/run/current-system/sw/bin/nix-store";
 
 mod apply;
+pub mod history;
+
+pub use history::Build;
 
 #[derive(Clone, Copy)]
 pub struct Steps {
@@ -31,14 +35,16 @@ pub struct Steps {
 
 impl Default for Steps {
     fn default() -> Self {
-        Self {
-            boot: false,
-            activate: true,
-        }
+        Self::ACTIVATE
     }
 }
 
 impl Steps {
+    pub const ACTIVATE: Self = Self {
+        boot: false,
+        activate: true,
+    };
+
     pub fn applies(self) -> bool {
         self.boot || self.activate
     }
@@ -87,37 +93,17 @@ fn executable(path: &Path) -> bool {
     path.is_file() && access(path, Access::EXEC_OK).is_ok()
 }
 
-pub struct Build {
-    head: Option<String>,
-    directory: TempDir,
-    path: PathBuf,
-}
-
 impl Build {
-    pub fn matches(&self, status: &WorkingCopy) -> bool {
-        status
-            .clean_head()
-            .is_some_and(|head| self.head.as_deref() == Some(head))
-    }
-
-    async fn result_path(directory: &TempDir) -> Option<PathBuf> {
-        let path = fs::canonicalize(directory.path().join(OUT_LINK))
-            .await
-            .ok()?;
-        if path.parent() != Some(Path::new(STORE))
-            || !fs::metadata(path.join("nixos-version"))
-                .await
-                .is_ok_and(|metadata| metadata.is_file())
-        {
-            return None;
-        }
-        let script = fs::canonicalize(path.join(SWITCH)).await.ok()?;
-        (script.starts_with(STORE) && executable(&script)).then_some(path)
+    pub fn matches_worktree(&self, status: &WorkingCopy) -> bool {
+        status.clean_head().is_some_and(|head| {
+            matches!(&self.source, history::Source::Built { revision, .. } if revision.as_deref() == Some(head))
+        })
     }
 }
 
 #[derive(Clone, Copy)]
 pub enum Step {
+    History,
     Inspect,
     Authorize,
     Build,
@@ -140,9 +126,10 @@ pub enum Error {
     MissingHostname,
     InvalidPath,
     MissingFlake,
-    BuildDirectory,
     BuildResult,
     BuildOutdated,
+    History,
+    TargetUnavailable,
 }
 
 #[derive(Clone)]
@@ -156,16 +143,18 @@ pub enum Event {
 
 pub struct Run {
     pub steps: Steps,
+    pub ready: bool,
     pub step: Step,
     pub outcome: Option<Result<(), Error>>,
     pub interrupting: bool,
 }
 
 impl Run {
-    pub fn new(steps: Steps) -> Self {
+    pub fn new(steps: Steps, ready: bool) -> Self {
         Self {
             steps,
-            step: Step::Inspect,
+            ready,
+            step: Step::History,
             outcome: None,
             interrupting: false,
         }
@@ -176,14 +165,105 @@ impl Run {
     }
 }
 
+#[derive(Clone)]
+pub enum ReadyTarget {
+    Selected(PathBuf),
+    Quick(history::QuickRollback),
+}
+
+impl ReadyTarget {
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Selected(path) => path,
+            Self::Quick(rollback) => &rollback.target,
+        }
+    }
+}
+
+pub enum Request {
+    Repository {
+        config: Box<Config>,
+        steps: Steps,
+        cached: Option<Arc<Build>>,
+    },
+    Ready(ReadyTarget),
+}
+
 pub async fn run<F: Future<Output = ()> + Send>(
+    runner: &CommandRunner,
+    request: Request,
+    mut interrupt: mpsc::Receiver<()>,
+    mut emit: impl FnMut(Event) -> F + Send,
+) -> Result<(), Error> {
+    let mut session = loop {
+        if interrupt.try_recv().is_ok() {
+            return Err(Error::Interrupted);
+        }
+        match tokio::task::spawn_blocking(history::Session::open).await {
+            Ok(Ok(session)) => break session,
+            Ok(Err(error)) if error.kind() == io::ErrorKind::WouldBlock => {
+                tokio::select! {
+                    Some(()) = interrupt.recv() => return Err(Error::Interrupted),
+                    () = tokio::time::sleep(Duration::from_millis(150)) => {}
+                }
+            }
+            Ok(Err(error)) => return Err(history_error(error)),
+            Err(_) => return Err(Error::History),
+        }
+    };
+
+    match request {
+        Request::Repository {
+            config,
+            steps,
+            cached,
+        } => {
+            rebuild(
+                runner,
+                &config,
+                steps,
+                cached,
+                &mut session,
+                &mut interrupt,
+                &mut emit,
+            )
+            .await
+        }
+        Request::Ready(target) => {
+            let snapshot = session.snapshot();
+            let path = target.path();
+            if matches!(&target, ReadyTarget::Quick(expected) if snapshot.quick_rollback.as_ref() != Some(expected))
+                || !snapshot
+                    .targets
+                    .iter()
+                    .any(|entry| entry.store_path == path && !entry.active)
+            {
+                return Err(Error::TargetUnavailable);
+            }
+            apply_ready(
+                runner,
+                &mut session,
+                &mut None,
+                Mode::Activate,
+                path,
+                &mut interrupt,
+                &mut emit,
+            )
+            .await
+        }
+    }
+}
+
+async fn rebuild<F: Future<Output = ()> + Send>(
     runner: &CommandRunner,
     config: &Config,
     steps: Steps,
     cached: Option<Arc<Build>>,
-    mut interrupt: mpsc::Receiver<()>,
-    mut emit: impl FnMut(Event) -> F + Send,
+    session: &mut history::Session,
+    interrupt: &mut mpsc::Receiver<()>,
+    emit: &mut (impl FnMut(Event) -> F + Send),
 ) -> Result<(), Error> {
+    emit(Event::Started(Step::Inspect)).await;
     let inspection = tokio::select! {
         biased;
         Some(()) = interrupt.recv() => return Err(Error::Interrupted),
@@ -201,64 +281,79 @@ pub async fn run<F: Future<Output = ()> + Send>(
         return Err(Error::Unsynced);
     }
 
-    let source = if let Some(build) = cached {
-        if !build.matches(&status) {
+    let mode = steps.apply_mode();
+    if let Some(build) = cached {
+        if !build.matches_worktree(&status) {
             return Err(Error::BuildOutdated);
         }
-        if Build::result_path(&build.directory).await.as_ref() != Some(&build.path) {
+        if !session.cached(&build) {
             return Err(Error::BuildResult);
         }
-        BuildSource::Cached(build)
-    } else {
-        let head = status.clean_head();
-        let selector = system_selector(config, head).await?;
-        BuildSource::Worktree { selector, head }
-    };
-
-    let Some(mode) = steps.apply_mode() else {
-        return build(runner, source, &mut interrupt, &mut emit)
-            .await
-            .map(drop);
-    };
-    let helper = apply::authorize(runner, mode, &mut interrupt, &mut emit).await?;
-    match build(runner, source, &mut interrupt, &mut emit).await {
-        Ok(build) => {
-            apply::apply(runner, helper, mode, &build.path, &mut interrupt, &mut emit).await
-        }
-        Err(error) => {
-            // Closing the helper's input without a build result makes it exit.
-            let _ = runner
-                .finish(helper, &mut interrupt, || emit(Event::InterruptFailed))
-                .await;
-            Err(error)
-        }
+        return match mode {
+            Some(mode) => {
+                apply_ready(
+                    runner,
+                    session,
+                    &mut None,
+                    mode,
+                    &build.store_path,
+                    interrupt,
+                    emit,
+                )
+                .await
+            }
+            None => Ok(()),
+        };
     }
-}
 
-enum BuildSource<'a> {
-    Cached(Arc<Build>),
-    Worktree {
-        selector: OsString,
-        head: Option<&'a str>,
-    },
+    let head = status.clean_head();
+    let selector = system_selector(config, head).await?;
+    let source = history::Source::Built {
+        revision: head.map(str::to_owned),
+        branch: status.branch,
+    };
+    // Authorize before a combined run so a cancelled prompt does not start a build.
+    let mut helper = match mode {
+        Some(mode) => Some(apply::authorize(runner, mode, interrupt, emit).await?),
+        None => None,
+    };
+    let result = match build(runner, session, selector, source, interrupt, emit).await {
+        Ok(build) => match mode {
+            Some(mode) => {
+                apply_ready(
+                    runner,
+                    session,
+                    &mut helper,
+                    mode,
+                    &build.store_path,
+                    interrupt,
+                    emit,
+                )
+                .await
+            }
+            None => Ok(()),
+        },
+        Err(error) => Err(error),
+    };
+    if let Some(helper) = helper {
+        // EOF makes the helper exit if the target could not be handed off.
+        let _ = runner
+            .finish(helper, interrupt, || emit(Event::InterruptFailed))
+            .await;
+    }
+    result
 }
 
 async fn build<F: Future<Output = ()> + Send>(
     runner: &CommandRunner,
-    source: BuildSource<'_>,
+    session: &mut history::Session,
+    selector: OsString,
+    source: history::Source,
     interrupt: &mut mpsc::Receiver<()>,
     emit: &mut (impl FnMut(Event) -> F + Send),
 ) -> Result<Arc<Build>, Error> {
-    let (selector, head) = match source {
-        BuildSource::Cached(build) => return Ok(build),
-        BuildSource::Worktree { selector, head } => (selector, head),
-    };
     emit(Event::Started(Step::Build)).await;
-    // The result link keeps the store path alive for subsequent Apply actions.
-    let directory = tempfile::Builder::new()
-        .prefix("nixos-manager-build-")
-        .tempdir()
-        .map_err(|_| Error::BuildDirectory)?;
+    let root = session.start_build(source).map_err(history_error)?;
     let mut command = Command::new(NIX);
     command
         .args([
@@ -269,25 +364,88 @@ async fn build<F: Future<Output = ()> + Send>(
             "--no-write-lock-file",
             "--out-link",
         ])
-        .arg(directory.path().join(OUT_LINK))
+        .arg(&root)
         .arg(selector);
     let status = runner
         .interruptible(command, interrupt, || emit(Event::InterruptFailed))
         .await?;
     check_status(status)?;
 
-    let path = Build::result_path(&directory)
-        .await
-        .ok_or(Error::BuildResult)?;
-    let build = Arc::new(Build {
-        head: head.map(str::to_owned),
-        directory,
-        path,
-    });
-    if head.is_some() {
+    let path = history::resolve_system(&root).ok_or(Error::BuildResult)?;
+    let build = Arc::new(session.finish_build(&path).map_err(history_error)?);
+    if matches!(
+        &build.source,
+        history::Source::Built {
+            revision: Some(_),
+            ..
+        }
+    ) {
         emit(Event::Built(Arc::clone(&build))).await;
     }
     Ok(build)
+}
+
+async fn apply_ready<F: Future<Output = ()> + Send>(
+    runner: &CommandRunner,
+    session: &mut history::Session,
+    helper: &mut Option<RunningCommand>,
+    mode: Mode,
+    path: &Path,
+    interrupt: &mut mpsc::Receiver<()>,
+    emit: &mut (impl FnMut(Event) -> F + Send),
+) -> Result<(), Error> {
+    system_script(path).map_err(|_| Error::BuildResult)?;
+    let current = history::current_system();
+    let to_pin = current
+        .as_deref()
+        .filter(|path| session.needs_pin(mode, path));
+    session
+        .start_operation(mode, path, current.clone())
+        .map_err(history_error)?;
+    let result = async {
+        if let Some(previous) = to_pin {
+            emit(Event::Started(Step::History)).await;
+            let root = session
+                .start_build(history::Source::Imported {
+                    discovered_at: std::time::SystemTime::now().into(),
+                })
+                .map_err(history_error)?;
+            let mut command = Command::new(NIX_STORE);
+            command
+                .args(["--realise", "--add-root"])
+                .arg(&root)
+                .arg(previous);
+            let status = runner
+                .interruptible(command, interrupt, || emit(Event::InterruptFailed))
+                .await?;
+            check_status(status)?;
+            session.finish_build(previous).map_err(history_error)?;
+        }
+        let helper = match helper.take() {
+            Some(helper) => helper,
+            None => apply::authorize(runner, mode, interrupt, emit).await?,
+        };
+        apply::apply(runner, helper, mode, path, interrupt, emit, || {
+            session.registered().map_err(history_error)
+        })
+        .await
+    }
+    .await;
+    let outcome = match result {
+        Ok(()) => history::Outcome::Succeeded,
+        Err(Error::Cancelled) => history::Outcome::Cancelled,
+        Err(Error::Interrupted) => history::Outcome::Interrupted,
+        Err(_) => history::Outcome::Failed,
+    };
+    session
+        .finish_operation(outcome, history::current_system())
+        .map_err(history_error)?;
+    result
+}
+
+fn history_error(error: io::Error) -> Error {
+    eprintln!("nixos-manager: {error}");
+    Error::History
 }
 
 fn check_status(status: std::process::ExitStatus) -> Result<(), Error> {

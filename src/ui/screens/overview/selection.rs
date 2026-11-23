@@ -1,13 +1,10 @@
 use iced::{
     Color, Element, Font,
-    widget::{
-        text,
-        text_editor::{self, Action, Binding, Content},
-    },
+    widget::text_editor::{Action, Content},
 };
 
 use super::{DownloadStatus, Message, download_status_parts, journal};
-use crate::{command_runner::LogLine, i18n::I18n, rebuild::Run, ui::style::inputs};
+use crate::{command_runner::LogLine, i18n::I18n, rebuild::Run, ui::components::selectable_text};
 
 #[derive(Clone, Copy)]
 pub enum Target {
@@ -93,24 +90,7 @@ pub fn view(
     size: u32,
     color: Color,
 ) -> Element<'_, Message> {
-    text_editor::TextEditor::new(content)
-        .font(font)
-        .size(size)
-        .padding(0)
-        .wrapping(text::Wrapping::WordOrGlyph)
-        .style(move |_, _| inputs::selectable_text(color))
-        .on_action(move |action| Message::SelectText(target, action))
-        .key_binding(|keypress| {
-            Binding::from_key_press(keypress).filter(|binding| {
-                matches!(
-                    binding,
-                    Binding::Copy
-                        | Binding::Move(_)
-                        | Binding::Select(_)
-                        | Binding::SelectAll
-                        | Binding::Unfocus
-                )
-            })
-        })
-        .into()
+    selectable_text::view(content, font, size, color, move |action| {
+        Message::SelectText(target, action)
+    })
 }

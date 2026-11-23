@@ -13,6 +13,7 @@ use super::*;
 struct Labels {
     text: Vec<(String, Rectangle)>,
     inputs: Vec<Rectangle>,
+    focusables: Vec<Rectangle>,
     scroll_viewport: Option<(Rectangle, Vector)>,
 }
 
@@ -32,6 +33,15 @@ impl Operation for Labels {
         _state: &mut dyn iced::advanced::widget::operation::TextInput,
     ) {
         self.inputs.push(bounds);
+    }
+
+    fn focusable(
+        &mut self,
+        _id: Option<&Id>,
+        bounds: Rectangle,
+        _state: &mut dyn iced::advanced::widget::operation::Focusable,
+    ) {
+        self.focusables.push(bounds);
     }
 
     fn scrollable(
@@ -431,4 +441,150 @@ async fn overview_shows_saved_cache_warnings_without_a_repository_or_cli() {
     let _ = app.update(Message::CacheForgotten(true));
     assert!(app.cache.is_ok_and(|cache| cache.is_none()));
     assert!(app.cache_expiration_warning.is_none());
+}
+
+#[tokio::test]
+async fn build_history_shows_system_configurations_without_a_repository() {
+    let mut app = boot_with_cache(Ok(None));
+    let renderer = headless().await;
+    let size = Size::new(800.0, 540.0);
+    let labels = layout(&mut app.view(), &renderer, size).2;
+    assert!(labels.contains("Build History"));
+
+    let _ = app.update(Message::Overview(overview::Message::OpenBuildHistory));
+    assert!(matches!(app.screen, Screen::BuildHistory(_)));
+    let mut snapshot = history::Snapshot::default();
+    snapshot
+        .targets
+        .extend((42..57).map(|number| history::Target {
+            store_path: format!("/nix/store/example-{number}").into(),
+            builds: Vec::new(),
+            generations: vec![number],
+            profile_selected: number == 42,
+            selected_generation: (number == 42).then_some(number),
+            active: number == 42,
+            booted: number == 42,
+        }));
+    let _ = app.update(Message::HistoryLoaded(app.history_generation, snapshot));
+
+    app.set_language(LanguagePreference::Russian);
+    let compact = Size::new(560.0 / 1.5, 420.0 / 1.5);
+    let labels = layout(&mut app.view(), &renderer, compact).2;
+    let (viewport, _) = labels.scroll_viewport.expect("scrollable build history");
+    let last_generation = labels.focusables.last().expect("selectable generation");
+    assert!(last_generation.y > viewport.y + viewport.height);
+    let close = labels.bounds("Закрыть");
+    assert!(close.y >= viewport.y + viewport.height && close.y + close.height <= compact.height);
+    for status in ["активна", "загружена"] {
+        assert!(labels.contains(status));
+    }
+}
+
+#[tokio::test]
+async fn build_history_copies_paths_generations_and_build_details() {
+    #[derive(Default)]
+    struct Clipboard(Option<String>);
+
+    impl clipboard::Clipboard for Clipboard {
+        fn read(&self, _kind: clipboard::Kind) -> Option<String> {
+            self.0.clone()
+        }
+
+        fn write(&mut self, kind: clipboard::Kind, contents: String) {
+            assert_eq!(kind, clipboard::Kind::Standard);
+            self.0 = Some(contents);
+        }
+    }
+
+    let mut app = boot_with_cache(Ok(None));
+    let renderer = headless().await;
+    let size = Size::new(800.0, 540.0);
+    let store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-nixos-system";
+    let revision = "0123456789abcdef0123456789abcdef01234567";
+    let build = serde_json::from_value(serde_json::json!({
+        "id": "gen-build",
+        "gc_root": "builds/gen-build/result",
+        "store_path": store_path,
+        "source": { "kind": "built", "branch": "main", "revision": revision },
+        "built_at": "2026-01-02T03:04:05Z"
+    }))
+    .expect("build record");
+    let _ = app.update(Message::Overview(overview::Message::OpenBuildHistory));
+    let mut snapshot = history::Snapshot::default();
+    snapshot.targets.push(history::Target {
+        store_path: store_path.into(),
+        builds: vec![build],
+        generations: vec![42, 41],
+        selected_generation: Some(42),
+        profile_selected: true,
+        active: true,
+        booted: true,
+    });
+    let _ = app.update(Message::HistoryLoaded(app.history_generation, snapshot));
+
+    let (mut tree, _, labels) = layout(&mut app.view(), &renderer, size);
+    assert_eq!(labels.focusables.len(), 4);
+    let shortcut = |key: &'static str, code| {
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Character(key.into()),
+            modified_key: keyboard::Key::Character(key.into()),
+            physical_key: keyboard::key::Physical::Code(code),
+            location: keyboard::Location::Standard,
+            modifiers: keyboard::Modifiers::CTRL,
+            text: None,
+            repeat: false,
+        })
+    };
+
+    for (index, fragments) in [
+        vec![store_path],
+        vec!["42", "selected in system profile"],
+        vec!["41"],
+        vec!["1/2/2026", "3:04:05 AM UTC", "main", &revision[..8]],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut clipboard = Clipboard::default();
+        let bounds = labels.focusables[index];
+        for event in [
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+            shortcut("a", keyboard::key::Code::KeyA),
+            shortcut("c", keyboard::key::Code::KeyC),
+        ] {
+            let mut messages = Vec::new();
+            {
+                let mut view = app.view();
+                let widget = view.as_widget_mut();
+                tree.diff(&*widget);
+                let node =
+                    widget.layout(&mut tree, &renderer, &layout::Limits::new(Size::ZERO, size));
+                widget.update(
+                    &mut tree,
+                    &event,
+                    Layout::new(&node),
+                    mouse::Cursor::Available(bounds.center()),
+                    &renderer,
+                    &mut clipboard,
+                    &mut Shell::new(&mut messages),
+                    &Rectangle::with_size(size),
+                );
+            }
+            for message in messages {
+                let _ = app.update(message);
+            }
+        }
+        let copied = clipboard.0.expect("copied selected text");
+        if index == 0 {
+            assert_eq!(copied, store_path);
+        }
+        assert!(!copied.contains(&revision[..9]));
+        for fragment in fragments {
+            assert!(
+                copied.contains(fragment),
+                "missing {fragment:?} in {copied:?}"
+            );
+        }
+    }
 }
