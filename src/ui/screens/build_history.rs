@@ -1,6 +1,6 @@
 use fluent_bundle::FluentArgs;
 use iced::{
-    Center, Element, Fill, Font, Shrink, border,
+    Center, Element, Fill, Font, Shrink, border, padding,
     widget::{
         button, column, container, row, rule, scrollable, space, text,
         text_editor::{self, Content},
@@ -14,7 +14,7 @@ use crate::{
         history::{Build, Snapshot, Source, Target},
     },
     ui::{
-        components::{popup, selectable_text},
+        components::{icon_button, popup, selectable_text},
         modal,
         style::{buttons, colors, containers, spacing},
     },
@@ -276,13 +276,16 @@ fn target_row<'a>(
     }
     row![
         details,
-        (!target.active).then(|| button(text(i18n.text("history-activate")))
-            .padding([7, 12])
-            .style(buttons::secondary)
-            .on_press_maybe(
+        (!target.active).then(|| {
+            icon_button::view(
+                // Shift the triangle right to balance its wider left edge.
+                container(text("▶").size(14)).padding(padding::left(2)),
+                i18n.text("history-activate"),
                 can_activate
-                    .then(|| Message::Select(ReadyTarget::Selected(target.store_path.clone())))
-            )),
+                    .then(|| Message::Select(ReadyTarget::Selected(target.store_path.clone()))),
+                buttons::secondary,
+            )
+        }),
     ]
     .spacing(spacing::MD)
     .align_y(Center)

@@ -1,15 +1,18 @@
 use fluent_bundle::FluentArgs;
 use iced::{
-    Center, Color, Element, Fill, Font, Renderer, Theme,
+    Center, Color, Element, Fill, Font, Renderer,
     advanced::text::Renderer as _,
-    widget::{button, column, container, row, text, tooltip},
+    widget::{column, container, row, text},
 };
 
 use super::{Message, State, selection};
 use crate::{
     i18n::I18n,
     rebuild::{Error, Run, Step},
-    ui::style::{buttons, colors, containers, spacing},
+    ui::{
+        components::icon_button,
+        style::{buttons, colors, containers, spacing},
+    },
 };
 
 mod icon;
@@ -65,7 +68,7 @@ fn controls<'a>(
     } else {
         ("overview-show-journal", Renderer::SCROLL_DOWN_ICON)
     };
-    let toggle = icon_button(
+    let toggle = icon_button::view(
         text(arrow.to_string()).font(Renderer::ICON_FONT).size(14),
         i18n.text(toggle_label),
         Some(Message::ToggleJournal),
@@ -73,7 +76,7 @@ fn controls<'a>(
     );
 
     let interrupt = run.filter(|run| run.is_running()).map(|run| {
-        icon_button(
+        icon_button::view(
             Icon::Stop,
             i18n.text("overview-rebuild-interrupt"),
             (!run.interrupting).then_some(Message::InterruptRebuild),
@@ -82,13 +85,13 @@ fn controls<'a>(
     });
 
     let log_actions = row![
-        icon_button(
+        icon_button::view(
             Icon::Copy,
             i18n.text("overview-copy-journal"),
             has_journal.then_some(Message::CopyJournal),
             buttons::secondary,
         ),
-        icon_button(
+        icon_button::view(
             Icon::Trash,
             i18n.text("overview-clear-journal"),
             has_journal.then_some(Message::ClearJournal),
@@ -106,25 +109,6 @@ fn controls<'a>(
         .push(container(log_actions).align_right(Fill))
         .spacing(spacing::MD)
         .into()
-}
-
-fn icon_button<'a>(
-    icon: impl Into<Element<'a, Message>>,
-    label: String,
-    on_press: Option<Message>,
-    style: fn(&Theme, button::Status) -> button::Style,
-) -> Element<'a, Message> {
-    tooltip(
-        button(container(icon).center(34))
-            .padding(0)
-            .style(style)
-            .on_press_maybe(on_press),
-        text(label).size(13),
-        tooltip::Position::Top,
-    )
-    .gap(spacing::SM)
-    .style(containers::card)
-    .into()
 }
 
 fn log<'a>(i18n: &I18n, state: &'a State) -> Element<'a, Message> {

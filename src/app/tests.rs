@@ -923,6 +923,84 @@ async fn build_history_shows_system_configurations_without_a_repository() {
 }
 
 #[tokio::test]
+async fn build_history_activation_icon_shows_a_tooltip_and_selects_the_target() {
+    let mut app = boot_with_cache(Ok(None));
+    app.set_language(LanguagePreference::Russian);
+    let mut state = build_history::State::default();
+    let mut snapshot = history::Snapshot::default();
+    let inactive_path = "/nix/store/inactive-system";
+    for (path, active, generation) in [
+        ("/nix/store/active-system", true, 2),
+        (inactive_path, false, 1),
+    ] {
+        snapshot.targets.push(history::Target {
+            store_path: path.into(),
+            builds: Vec::new(),
+            generations: vec![generation],
+            profile_selected: false,
+            selected_generation: None,
+            active,
+            booted: active,
+        });
+    }
+    state.set_targets(&app.i18n, &snapshot.targets);
+
+    let renderer = headless().await;
+    let size = Size::new(560.0 / 1.5, 420.0 / 1.5);
+    let viewport = Rectangle::with_size(size);
+    let mut view = state
+        .view(&app.i18n, Some(&snapshot), true, None)
+        .map(Message::BuildHistory);
+    let (mut tree, node, labels) = layout(&mut view, &renderer, size);
+    assert_eq!(
+        labels.text.iter().filter(|(text, _)| text == "▶").count(),
+        1
+    );
+    assert!(!labels.contains("Активировать"));
+    let icon = labels.bounds("▶");
+    let button = labels
+        .containers
+        .iter()
+        .find(|bounds| bounds.size() == Size::new(34.0, 34.0) && bounds.contains(icon.center()))
+        .expect("activation button");
+    assert!(icon.center_x() > button.center_x());
+    let layout = Layout::new(&node);
+    let widget = view.as_widget_mut();
+    let cursor = mouse::Cursor::Available(icon.center());
+    let mut messages = Vec::new();
+    for event in [
+        mouse::Event::CursorMoved {
+            position: icon.center(),
+        },
+        mouse::Event::ButtonPressed(mouse::Button::Left),
+        mouse::Event::ButtonReleased(mouse::Button::Left),
+    ] {
+        widget.update(
+            &mut tree,
+            &Event::Mouse(event),
+            layout,
+            cursor,
+            &renderer,
+            &mut clipboard::Null,
+            &mut Shell::new(&mut messages),
+            &viewport,
+        );
+        if matches!(event, mouse::Event::CursorMoved { .. }) {
+            assert!(
+                widget
+                    .overlay(&mut tree, layout, &renderer, &viewport, Vector::ZERO)
+                    .is_some()
+            );
+        }
+    }
+    assert!(matches!(
+        messages.as_slice(),
+        [Message::BuildHistory(build_history::Message::Select(rebuild::ReadyTarget::Selected(path)))]
+            if path == std::path::Path::new(inactive_path)
+    ));
+}
+
+#[tokio::test]
 async fn build_history_copies_paths_generations_and_build_details() {
     #[derive(Default)]
     struct Clipboard(Option<String>);
