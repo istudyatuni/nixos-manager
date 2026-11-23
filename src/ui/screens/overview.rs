@@ -10,7 +10,10 @@ use crate::{
     git,
     i18n::I18n,
     rebuild,
-    ui::style::{buttons, colors, containers, inputs, spacing},
+    ui::{
+        components::menu,
+        style::{buttons, colors, containers, inputs, spacing},
+    },
 };
 
 mod journal;
@@ -23,6 +26,7 @@ const OUTPUT_WIDTH: f32 = CARD_WIDTH * 2.0;
 const COMPACT_WIDTH: f32 = 520.0;
 const COMPACT_HEIGHT: f32 = 400.0;
 const COMPACT_JOURNAL_HEIGHT: f32 = 224.0;
+const ACTIONS_ICON: &str = "☰";
 
 #[derive(Clone)]
 pub enum Message {
@@ -30,6 +34,8 @@ pub enum Message {
     SetActivate(bool),
     Download,
     Rebuild,
+    OpenActionsMenu,
+    CloseActionsMenu,
     OpenBuildHistory,
     InterruptRebuild,
     ToggleJournal,
@@ -101,18 +107,15 @@ pub fn view<'a>(
 ) -> Element<'a, Message> {
     responsive(move |size| {
         let compact = size.width < COMPACT_WIDTH || size.height < COMPACT_HEIGHT;
-        let controls = controls(i18n, repository.as_ref(), loading, load_error, state);
+        let controls = controls(
+            i18n,
+            repository.as_ref(),
+            loading,
+            load_error,
+            rebuild.is_some_and(rebuild::Run::is_running),
+            state,
+        );
         let controls = container(controls).width(Fill).max_width(CARD_WIDTH);
-        let history = (!loading).then(|| {
-            let busy = repository
-                .as_ref()
-                .is_some_and(|repository| repository.busy)
-                || rebuild.is_some_and(rebuild::Run::is_running);
-            button(text(i18n.text("history-title")))
-                .padding([7, 12])
-                .style(buttons::secondary)
-                .on_press_maybe((!busy).then_some(Message::OpenBuildHistory))
-        });
         let mut journal = container(journal::view(i18n, rebuild, state))
             .width(Fill)
             .max_width(OUTPUT_WIDTH);
@@ -124,7 +127,6 @@ pub fn view<'a>(
             column![]
                 .push(cache_notice.as_ref().map(|notice| notice.view(i18n)))
                 .push(controls)
-                .push(history)
                 .push(journal)
                 .width(Fill)
                 .spacing(spacing::LG)
@@ -150,6 +152,7 @@ fn controls<'a>(
     repository: Option<&Repository<'_>>,
     loading: bool,
     load_error: bool,
+    rebuild_running: bool,
     state: &'a State,
 ) -> Element<'a, Message> {
     match repository {
@@ -172,10 +175,33 @@ fn controls<'a>(
                         .align_x(Center),
                 );
             }
+            if !loading {
+                content = content.push(actions_menu(i18n, state, !rebuild_running));
+            }
 
             container(content).center_x(Fill).into()
         }
     }
+}
+
+fn actions_menu<'a>(i18n: &I18n, state: &State, enabled: bool) -> Element<'a, Message> {
+    let open = state.actions_menu_open && enabled;
+    let trigger = button(
+        text(ACTIONS_ICON)
+            .size(18)
+            .width(Fill)
+            .height(Fill)
+            .align_x(Center)
+            .align_y(Center),
+    )
+    .width(36)
+    .height(36)
+    .padding(0)
+    .style(move |theme, status| buttons::menu_trigger(theme, status, open))
+    .on_press_maybe(enabled.then_some(Message::OpenActionsMenu));
+    let panel =
+        open.then(|| menu::panel([(i18n.text("history-title"), Message::OpenBuildHistory)]));
+    menu::anchored(trigger, panel, Message::CloseActionsMenu)
 }
 
 fn configured<'a>(
@@ -232,13 +258,19 @@ fn configured<'a>(
     } else {
         "overview-apply"
     };
-    let actions = row![
-        button(text(i18n.text("overview-download")))
+    let download = row![
+        actions_menu(i18n, state, !repository.busy),
+        button(text(i18n.text("overview-download")).wrapping(text::Wrapping::WordOrGlyph))
             .padding([7, 12])
             .style(buttons::secondary)
             .on_press_maybe(
                 (repository.git_available && !repository.busy).then_some(Message::Download),
             ),
+    ]
+    .spacing(spacing::MD)
+    .align_y(Center);
+    let actions = row![
+        download,
         button(text(i18n.text(action)))
             .padding([7, 12])
             .style(buttons::primary)
@@ -251,6 +283,7 @@ fn configured<'a>(
             ),
     ]
     .spacing(spacing::MD)
+    .align_y(Center)
     .wrap()
     .align_x(Center);
 

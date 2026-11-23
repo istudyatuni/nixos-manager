@@ -196,6 +196,7 @@ impl App {
         let cache = matches!(self.screen, Screen::CacheSettings(_));
         let history = matches!(self.screen, Screen::BuildHistory(_));
         if self.settings_menu_open
+            || self.overview.actions_menu_open
             || history
             || cache
             || matches!(&self.screen, Screen::Settings(state) if !state.saving())
@@ -235,12 +236,23 @@ impl App {
             Message::OpenSettingsMenu
                 if !self.loading && matches!(self.screen, Screen::Overview) =>
             {
+                self.overview.actions_menu_open = false;
                 self.settings_menu_open = true;
+            }
+            Message::Overview(overview::Message::OpenActionsMenu)
+                if !self.loading && !self.is_busy() && matches!(self.screen, Screen::Overview) =>
+            {
+                self.settings_menu_open = false;
+                self.overview.actions_menu_open = true;
+            }
+            Message::Overview(overview::Message::CloseActionsMenu) => {
+                self.overview.actions_menu_open = false;
             }
             Message::Overview(overview::Message::OpenBuildHistory)
                 if !self.loading && !self.is_busy() && matches!(self.screen, Screen::Overview) =>
             {
                 self.settings_menu_open = false;
+                self.overview.actions_menu_open = false;
                 self.screen = Screen::BuildHistory(build_history::State::default());
                 return self.refresh_history();
             }
@@ -266,6 +278,7 @@ impl App {
                 if !self.loading && matches!(self.screen, Screen::Overview) =>
             {
                 self.settings_menu_open = false;
+                self.overview.actions_menu_open = false;
                 self.screen = Screen::CacheSettings(Box::new(cache_settings::State::new(
                     self.cache.as_ref().ok().and_then(Option::as_ref),
                     attic::available(env::var_os("PATH").as_deref()),
@@ -273,6 +286,7 @@ impl App {
             }
             Message::OpenSettings if !self.loading && matches!(self.screen, Screen::Overview) => {
                 self.settings_menu_open = false;
+                self.overview.actions_menu_open = false;
                 self.screen = Screen::Settings(Box::new(settings::State::new(
                     self.config.as_ref(),
                     self.home.as_deref(),
@@ -470,7 +484,10 @@ impl App {
                 }
             }
             Message::DismissDialog => match self.screen {
-                Screen::Overview => self.settings_menu_open = false,
+                Screen::Overview => {
+                    self.settings_menu_open = false;
+                    self.overview.actions_menu_open = false;
+                }
                 Screen::BuildHistory(_) => {
                     return self.update_history(build_history::Message::Close);
                 }
@@ -538,6 +555,7 @@ impl App {
             Message::OpenSettingsMenu
             | Message::OpenSettings
             | Message::OpenCacheSettings
+            | Message::Overview(overview::Message::OpenActionsMenu)
             | Message::Overview(overview::Message::OpenBuildHistory)
             | Message::HistoryLoaded(_, _) => {}
         }

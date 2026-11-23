@@ -24,6 +24,7 @@ pub enum Target {
 }
 
 pub struct State {
+    pub actions_menu_open: bool,
     pub journal_expanded: bool,
     pub(super) journal: journal::Output,
     pub(super) working_copy: selectable_text::Label,
@@ -36,6 +37,7 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            actions_menu_open: false,
             journal_expanded: false,
             journal: journal::Output::default(),
             working_copy: selectable_text::Label::new(REPOSITORY_STATUS_SIZE),

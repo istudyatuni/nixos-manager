@@ -1,7 +1,7 @@
 use iced::{
     Font, Pixels, Point, Rectangle, Renderer, Size, Vector,
     advanced::{
-        Layout, Shell, clipboard, layout, mouse,
+        Layout, Shell, clipboard, layout, mouse, overlay,
         renderer::Headless,
         widget::{Id, Operation, Tree, operation::Scrollable},
     },
@@ -637,14 +637,92 @@ async fn overview_shows_saved_cache_warnings_without_a_repository_or_cli() {
 }
 
 #[tokio::test]
+async fn compact_overview_keeps_actions_menu_to_the_left_of_download() {
+    let mut app = boot_with_cache(Ok(None));
+    app.config = Some(Config {
+        repository: "https://github.com/example/config".into(),
+        ..Config::default()
+    });
+    let renderer = headless().await;
+    let labels = layout(&mut app.view(), &renderer, Size::new(320.0, 360.0)).2;
+    let trigger = labels.bounds("☰");
+    let download = labels.bounds(&app.i18n.text("overview-download"));
+    assert!(trigger.x + trigger.width <= download.x);
+    assert!(trigger.y <= download.center().y && download.center().y <= trigger.y + trigger.height);
+}
+
+#[tokio::test]
 async fn build_history_shows_system_configurations_without_a_repository() {
     let mut app = boot_with_cache(Ok(None));
     let renderer = headless().await;
     let size = Size::new(800.0, 540.0);
-    let labels = layout(&mut app.view(), &renderer, size).2;
-    assert!(labels.contains("Build History"));
-
-    let _ = app.update(Message::Overview(overview::Message::OpenBuildHistory));
+    let viewport = Rectangle::with_size(size);
+    let click = [
+        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+    ];
+    let (trigger, mut messages) = {
+        let mut view = app.view();
+        let (mut tree, node, labels) = layout(&mut view, &renderer, size);
+        assert!(!labels.contains("Build History"));
+        let trigger = labels.bounds("☰");
+        let mut messages = Vec::new();
+        for event in &click {
+            view.as_widget_mut().update(
+                &mut tree,
+                event,
+                Layout::new(&node),
+                mouse::Cursor::Available(trigger.center()),
+                &renderer,
+                &mut clipboard::Null,
+                &mut Shell::new(&mut messages),
+                &viewport,
+            );
+        }
+        (trigger, messages)
+    };
+    assert!(matches!(
+        messages.as_slice(),
+        [Message::Overview(overview::Message::OpenActionsMenu)]
+    ));
+    let _ = app.update(messages.pop().unwrap());
+    {
+        let mut view = app.view();
+        let (mut tree, node, _) = layout(&mut view, &renderer, size);
+        let overlay = view
+            .as_widget_mut()
+            .overlay(
+                &mut tree,
+                Layout::new(&node),
+                &renderer,
+                &viewport,
+                Vector::ZERO,
+            )
+            .expect("actions menu");
+        let mut overlay = overlay::Nested::new(overlay);
+        let node = overlay.layout(&renderer, size);
+        let layout = Layout::new(&node);
+        let mut labels = Labels::default();
+        overlay.operate(layout, &renderer, &mut labels);
+        let item = labels.bounds("Build History");
+        assert!(item.y >= trigger.y + trigger.height);
+        for event in &click {
+            overlay.update(
+                event,
+                layout,
+                mouse::Cursor::Available(item.center()),
+                &renderer,
+                &mut clipboard::Null,
+                &mut Shell::new(&mut messages),
+            );
+        }
+    }
+    assert!(matches!(
+        messages.as_slice(),
+        [Message::Overview(overview::Message::OpenBuildHistory)]
+    ));
+    let _ = app.update(messages.pop().unwrap());
+    assert!(!app.overview.actions_menu_open);
     assert!(matches!(app.screen, Screen::BuildHistory(_)));
     let mut snapshot = history::Snapshot::default();
     snapshot

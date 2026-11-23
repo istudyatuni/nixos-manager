@@ -10,6 +10,15 @@ pub fn secondary(_theme: &Theme, status: button::Status) -> button::Style {
     outlined(status, colors::TEXT)
 }
 
+pub fn menu_trigger(theme: &Theme, status: button::Status, open: bool) -> button::Style {
+    let status = if open {
+        button::Status::Pressed
+    } else {
+        status
+    };
+    secondary(theme, status)
+}
+
 pub fn danger(_theme: &Theme, status: button::Status) -> button::Style {
     let mut style = outlined(status, colors::DANGER);
     if status != button::Status::Disabled {
