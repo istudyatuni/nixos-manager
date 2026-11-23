@@ -1,7 +1,8 @@
 use fluent_bundle::FluentArgs;
 use iced::{
-    Color, Element, Fill, Font,
-    widget::{button, column, container, row, text},
+    Center, Color, Element, Fill, Font, Renderer, Theme,
+    advanced::text::Renderer as _,
+    widget::{button, column, container, row, text, tooltip},
 };
 
 use super::{Message, State, selection};
@@ -11,45 +12,17 @@ use crate::{
     ui::style::{buttons, colors, containers, spacing},
 };
 
+mod icon;
 mod output;
 
+use icon::Icon;
 pub(super) use output::Output;
 
 pub fn view<'a>(i18n: &I18n, run: Option<&Run>, state: &'a State) -> Element<'a, Message> {
-    let toggle = if state.journal_expanded {
-        "overview-hide-journal"
-    } else {
-        "overview-show-journal"
-    };
     let has_journal = state.has_journal();
-    let controls = row![
-        button(text(i18n.text(toggle)).size(13))
-            .padding([5, 8])
-            .style(buttons::secondary)
-            .on_press(Message::ToggleJournal),
-        button(text(i18n.text("overview-copy-journal")).size(13))
-            .padding([5, 8])
-            .style(buttons::secondary)
-            .on_press_maybe(has_journal.then_some(Message::CopyJournal)),
-        button(text(i18n.text("overview-clear-journal")).size(13))
-            .padding([5, 8])
-            .style(buttons::secondary)
-            .on_press_maybe(has_journal.then_some(Message::ClearJournal)),
-    ]
-    .width(Fill)
-    .spacing(spacing::MD)
-    .wrap();
-    let mut actions = row![controls].spacing(spacing::MD);
-    if let Some(run) = run.filter(|run| run.is_running()) {
-        actions = actions.push(
-            button(text(i18n.text("overview-rebuild-interrupt")).size(13))
-                .padding([5, 8])
-                .style(buttons::danger)
-                .on_press_maybe((!run.interrupting).then_some(Message::InterruptRebuild)),
-        );
-    }
-
-    let mut content = column![actions].width(Fill).spacing(spacing::MD);
+    let mut content = column![controls(i18n, run, state.journal_expanded, has_journal)]
+        .width(Fill)
+        .spacing(spacing::MD);
 
     if let Some(run) = run {
         let status = if has_error(run) {
@@ -79,6 +52,79 @@ pub fn view<'a>(i18n: &I18n, run: Option<&Run>, state: &'a State) -> Element<'a,
         .padding(spacing::LG)
         .style(containers::card)
         .into()
+}
+
+fn controls<'a>(
+    i18n: &I18n,
+    run: Option<&Run>,
+    expanded: bool,
+    has_journal: bool,
+) -> Element<'a, Message> {
+    let (toggle_label, arrow) = if expanded {
+        ("overview-hide-journal", Renderer::SCROLL_UP_ICON)
+    } else {
+        ("overview-show-journal", Renderer::SCROLL_DOWN_ICON)
+    };
+    let toggle = icon_button(
+        text(arrow.to_string()).font(Renderer::ICON_FONT).size(14),
+        i18n.text(toggle_label),
+        Some(Message::ToggleJournal),
+        buttons::secondary,
+    );
+
+    let interrupt = run.filter(|run| run.is_running()).map(|run| {
+        icon_button(
+            Icon::Stop,
+            i18n.text("overview-rebuild-interrupt"),
+            (!run.interrupting).then_some(Message::InterruptRebuild),
+            buttons::danger,
+        )
+    });
+
+    let log_actions = row![
+        icon_button(
+            Icon::Copy,
+            i18n.text("overview-copy-journal"),
+            has_journal.then_some(Message::CopyJournal),
+            buttons::secondary,
+        ),
+        icon_button(
+            Icon::Trash,
+            i18n.text("overview-clear-journal"),
+            has_journal.then_some(Message::ClearJournal),
+            buttons::secondary,
+        ),
+    ]
+    .spacing(spacing::MD);
+
+    let journal_heading = row![toggle, text(i18n.text("overview-journal-title")).size(16)]
+        .spacing(spacing::LG)
+        .align_y(Center);
+
+    row![container(journal_heading).width(Fill)]
+        .push(interrupt)
+        .push(container(log_actions).align_right(Fill))
+        .spacing(spacing::MD)
+        .into()
+}
+
+fn icon_button<'a>(
+    icon: impl Into<Element<'a, Message>>,
+    label: String,
+    on_press: Option<Message>,
+    style: fn(&Theme, button::Status) -> button::Style,
+) -> Element<'a, Message> {
+    tooltip(
+        button(container(icon).center(34))
+            .padding(0)
+            .style(style)
+            .on_press_maybe(on_press),
+        text(label).size(13),
+        tooltip::Position::Top,
+    )
+    .gap(spacing::SM)
+    .style(containers::card)
+    .into()
 }
 
 fn log<'a>(i18n: &I18n, state: &'a State) -> Element<'a, Message> {

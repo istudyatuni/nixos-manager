@@ -55,6 +55,7 @@ overview-rebuild-invalid-path = Не удалось использовать п�
 overview-rebuild-missing-flake = В указанной поддиректории не найден flake.nix.
 overview-rebuild-build-result = Результат сборки недоступен. Соберите конфигурацию заново.
 overview-rebuild-build-outdated = Состояние репозитория изменилось. Соберите конфигурацию заново.
+overview-journal-title = Логи
 overview-show-journal = Развернуть журнал
 overview-hide-journal = Свернуть журнал
 overview-copy-journal = Скопировать логи

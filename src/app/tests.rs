@@ -12,12 +12,17 @@ use super::*;
 #[derive(Default)]
 struct Labels {
     text: Vec<(String, Rectangle)>,
+    containers: Vec<Rectangle>,
     inputs: Vec<Rectangle>,
     focusables: Vec<Rectangle>,
     scroll_viewport: Option<(Rectangle, Vector)>,
 }
 
 impl Operation for Labels {
+    fn container(&mut self, _id: Option<&Id>, bounds: Rectangle) {
+        self.containers.push(bounds);
+    }
+
     fn traverse(&mut self, visit: &mut dyn FnMut(&mut dyn Operation)) {
         visit(self);
     }
@@ -145,6 +150,76 @@ fn journal_collapses_only_after_successful_downloads_and_rebuilds() {
         assert!(app.overview.journal_expanded);
         let _ = app.update(Message::Rebuild(rebuild::Event::Finished(outcome)));
         assert_eq!(app.overview.journal_expanded, outcome.is_err());
+    }
+}
+
+#[tokio::test]
+async fn journal_icons_keep_alignment_and_show_tooltips_above() {
+    let mut app = boot_with_cache(Ok(None));
+    app.set_language(LanguagePreference::Russian);
+    app.rebuild = Some(rebuild::Run::new(rebuild::Steps::default(), true));
+    let renderer = headless().await;
+
+    for (size, expanded, toggle_label) in [
+        (Size::new(800.0, 540.0), false, "Развернуть журнал"),
+        (Size::new(560.0 / 1.5, 420.0 / 1.5), true, "Свернуть журнал"),
+    ] {
+        app.overview.journal_expanded = expanded;
+        let mut view = app.view();
+        let (mut tree, node, labels) = layout(&mut view, &renderer, size);
+        let mut controls: Vec<_> = labels
+            .containers
+            .iter()
+            .copied()
+            .filter(|bounds| bounds.size() == Size::new(34.0, 34.0))
+            .collect();
+        controls.dedup();
+        let [toggle, interrupt, copy, clear] = controls.as_slice() else {
+            panic!("Expected four journal icon buttons, found {controls:?}");
+        };
+        let heading = labels.bounds("Логи");
+
+        assert!((interrupt.center_x() - size.width / 2.0).abs() < 1.0);
+        assert!(toggle.x + toggle.width <= heading.x);
+        assert!(heading.x + heading.width <= interrupt.x);
+        assert!(interrupt.x + interrupt.width <= copy.x);
+        assert!(copy.x + copy.width <= clear.x);
+        assert!(clear.x + clear.width < size.width);
+
+        let layout = Layout::new(&node);
+        let viewport = Rectangle::with_size(size);
+        let widget = view.as_widget_mut();
+        for (bounds, label) in controls.iter().zip([
+            toggle_label,
+            "Прервать",
+            "Скопировать логи",
+            "Очистить логи",
+        ]) {
+            assert_eq!(bounds.y, toggle.y);
+            assert!(!labels.contains(label));
+            let position = bounds.center();
+            widget.update(
+                &mut tree,
+                &Event::Mouse(mouse::Event::CursorMoved { position }),
+                layout,
+                mouse::Cursor::Available(position),
+                &renderer,
+                &mut clipboard::Null,
+                &mut Shell::new(&mut Vec::new()),
+                &viewport,
+            );
+            let mut tooltip = widget
+                .overlay(&mut tree, layout, &renderer, &viewport, Vector::ZERO)
+                .expect("journal button tooltip on hover");
+            let node = tooltip.as_overlay_mut().layout(&renderer, size);
+            let mut label_layout = Layout::new(&node);
+            while let Some(child) = label_layout.children().next() {
+                label_layout = child;
+            }
+            let label_bounds = label_layout.bounds();
+            assert!(label_bounds.width > 0.0);
+            assert!(label_bounds.y + label_bounds.height <= bounds.y);
+        }
     }
 }
 

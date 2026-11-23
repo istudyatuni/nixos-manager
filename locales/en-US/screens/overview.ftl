@@ -55,6 +55,7 @@ overview-rebuild-invalid-path = Could not use the repository path as a flake ref
 overview-rebuild-missing-flake = Could not find flake.nix in the configured subdirectory.
 overview-rebuild-build-result = The build result is unavailable. Build the configuration again.
 overview-rebuild-build-outdated = The repository changed. Build the configuration again.
+overview-journal-title = Logs
 overview-show-journal = Show log
 overview-hide-journal = Hide log
 overview-copy-journal = Copy log
