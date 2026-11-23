@@ -242,15 +242,21 @@ impl Session {
     }
 
     pub(super) fn start_build(&mut self, source: Source) -> io::Result<PathBuf> {
-        let builds = self.directory.join("builds");
-        fs::create_dir_all(&builds)?;
-        let directory = tempfile::Builder::new().prefix("gen-").tempdir_in(builds)?;
-        let id = directory
-            .path()
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
+        let (id, directory) = match self.reusable_build_id(&source)? {
+            Some(id) => (id, None),
+            None => {
+                let builds = self.directory.join("builds");
+                fs::create_dir_all(&builds)?;
+                let directory = tempfile::Builder::new().prefix("gen-").tempdir_in(builds)?;
+                let id = directory
+                    .path()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                (id, Some(directory))
+            }
+        };
         let pending = PendingBuild {
             id,
             source,
@@ -259,8 +265,35 @@ impl Session {
         let root = self.directory.join(pending.gc_root()?);
         self.history.pending_build = Some(pending);
         self.save()?;
-        let _ = directory.keep();
+        if let Some(directory) = directory {
+            let _ = directory.keep();
+        }
         Ok(root)
+    }
+
+    fn reusable_build_id(&self, source: &Source) -> io::Result<Option<String>> {
+        let Source::Built {
+            revision: Some(revision),
+            ..
+        } = source
+        else {
+            return Ok(None);
+        };
+        let builds = self.history.builds.iter().rev().filter(|build| {
+            matches!(&build.source, Source::Built { revision: Some(previous), .. } if previous == revision)
+        });
+        if builds.clone().next().is_none() {
+            return Ok(None);
+        }
+        let roots = registered_roots(&self.auto_roots)?;
+        for build in builds {
+            if resolve_root(&self.directory.join(&build.gc_root), &roots)?.as_ref()
+                == Some(&build.store_path)
+            {
+                return Ok(Some(build.id.clone()));
+            }
+        }
+        Ok(None)
     }
 
     pub(super) fn finish_build(&mut self, expected: &Path) -> io::Result<Build> {
@@ -278,6 +311,7 @@ impl Session {
             ));
         }
         let build = pending.complete(gc_root, expected.to_owned(), SystemTime::now().into());
+        self.history.builds.retain(|entry| entry.id != build.id);
         self.history.builds.push(build.clone());
         self.save()?;
         Ok(build)
@@ -359,7 +393,10 @@ impl History {
             if let Some(pending) = self.pending_build.take() {
                 let gc_root = pending.gc_root()?;
                 let root = directory.join(&gc_root);
-                if let Some(store_path) = resolve_root(&root, &roots)? {
+                // A reused link that still points to the old result does not prove the rebuild finished.
+                if !self.builds.iter().any(|build| build.id == pending.id)
+                    && let Some(store_path) = resolve_root(&root, &roots)?
+                {
                     let time = fs::symlink_metadata(&root)
                         .and_then(|metadata| metadata.modified())
                         .map_or(pending.started_at, DateTime::from);

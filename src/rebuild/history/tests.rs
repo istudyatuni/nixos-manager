@@ -2,10 +2,10 @@ use std::os::unix::fs::symlink;
 
 use super::*;
 
-fn build_source() -> Source {
+fn build_source(branch: &str, revision: &str) -> Source {
     Source::Built {
-        branch: Some("release".into()),
-        revision: Some("0123456789".into()),
+        branch: Some(branch.into()),
+        revision: Some(revision.into()),
     }
 }
 
@@ -19,14 +19,14 @@ fn registered_roots_recover_and_retain_builds_individually() -> io::Result<()> {
     fs::create_dir(&store_path)?;
 
     let mut session = Session::open_in(&state, &auto_roots)?;
-    let first_root = session.start_build(build_source())?;
+    let first_root = session.start_build(build_source("release", "0123456780"))?;
     symlink(&store_path, &first_root)?;
     let first_registration = auto_roots.join("first");
     symlink(&first_root, &first_registration)?;
     let first = session.finish_build(&store_path)?;
     assert!(first.built_at.is_some());
 
-    let pending_root = session.start_build(build_source())?;
+    let pending_root = session.start_build(build_source("release", "0123456789"))?;
     let pending_registration = auto_roots.join("pending");
     symlink(&store_path, &pending_root)?;
     symlink(&pending_root, &pending_registration)?;
@@ -58,6 +58,110 @@ fn registered_roots_recover_and_retain_builds_individually() -> io::Result<()> {
     assert!(session.history.builds.is_empty());
     assert!(pending_registration.is_symlink());
     assert!(store_path.is_dir());
+    Ok(())
+}
+
+#[test]
+fn rebuilding_a_commit_updates_only_the_latest_legacy_entry() -> io::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let state = temp.path().join("state");
+    let auto_roots = temp.path().join("auto");
+    let store_path = temp.path().join("system-output");
+    fs::create_dir(&auto_roots)?;
+    fs::create_dir(&store_path)?;
+
+    let mut session = Session::open_in(&state, &auto_roots)?;
+    let first_root = session.start_build(build_source("release", "0123456780"))?;
+    symlink(&store_path, &first_root)?;
+    symlink(&first_root, auto_roots.join("first"))?;
+    let first = session.finish_build(&store_path)?;
+    let latest_root = session.start_build(build_source("release", "0123456789"))?;
+    assert_ne!(first_root, latest_root);
+    symlink(&store_path, &latest_root)?;
+    symlink(&latest_root, auto_roots.join("latest"))?;
+    let latest = session.finish_build(&store_path)?;
+    // Recreate history written before deduplication.
+    session.history.builds[0].source = build_source("release", "0123456789");
+    session.history.builds[1].built_at = Some(DateTime::UNIX_EPOCH);
+    session.save()?;
+    drop(session);
+
+    let mut session = Session::open_in(&state, &auto_roots)?;
+    assert_eq!(session.history.builds.len(), 2);
+    let root = session.start_build(build_source("main", "0123456789"))?;
+    assert_eq!(root, latest_root);
+    let rebuilt = session.finish_build(&store_path)?;
+    assert_eq!(rebuilt.id, latest.id);
+    assert!(rebuilt.built_at > Some(DateTime::UNIX_EPOCH));
+    drop(session);
+
+    let session = Session::open_in(&state, &auto_roots)?;
+    let [older, updated] = session.history.builds.as_slice() else {
+        panic!("expected two entries from the legacy history");
+    };
+    assert_eq!(older.id, first.id);
+    assert_eq!(older.built_at, first.built_at);
+    assert_eq!(updated.id, latest.id);
+    assert_eq!(updated.built_at, rebuilt.built_at);
+    assert!(
+        matches!(&updated.source, Source::Built { branch: Some(branch), .. } if branch == "main")
+    );
+    Ok(())
+}
+
+#[test]
+fn interrupted_rebuild_recovers_only_when_the_result_changes() -> io::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let state = temp.path().join("state");
+    let auto_roots = temp.path().join("auto");
+    let original = temp.path().join("original-output");
+    let replacement = temp.path().join("replacement-output");
+    fs::create_dir(&auto_roots)?;
+    fs::create_dir(&original)?;
+    fs::create_dir(&replacement)?;
+
+    let mut session = Session::open_in(&state, &auto_roots)?;
+    let root = session.start_build(build_source("release", "0123456789"))?;
+    symlink(&original, &root)?;
+    symlink(&root, auto_roots.join("result"))?;
+    let first = session.finish_build(&original)?;
+    assert_eq!(
+        session.start_build(build_source("main", "0123456789"))?,
+        root
+    );
+    drop(session);
+
+    let mut session = Session::open_in(&state, &auto_roots)?;
+    assert_eq!(session.history.builds.len(), 1);
+    assert!(session.cached(&first));
+    assert_eq!(session.history.builds[0].built_at, first.built_at);
+    assert!(
+        matches!(&session.history.builds[0].source, Source::Built { branch: Some(branch), .. } if branch == "release")
+    );
+    assert!(session.history.pending_build.is_none());
+    assert_eq!(
+        session.start_build(build_source("main", "0123456789"))?,
+        root
+    );
+    fs::remove_file(&root)?;
+    symlink(&replacement, &root)?;
+    drop(session);
+
+    let mut session = Session::open_in(&state, &auto_roots)?;
+    assert_eq!(session.history.builds.len(), 1);
+    let recovered = &session.history.builds[0];
+    assert_eq!(recovered.id, first.id);
+    assert_eq!(recovered.store_path, replacement);
+    assert!(
+        matches!(&recovered.source, Source::Built { branch: Some(branch), .. } if branch == "main")
+    );
+    assert!(session.history.pending_build.is_none());
+
+    fs::remove_file(&root)?;
+    assert_ne!(
+        session.start_build(build_source("main", "0123456789"))?,
+        root
+    );
     Ok(())
 }
 
