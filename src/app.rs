@@ -1,10 +1,10 @@
 use std::{env, path::PathBuf, sync::Arc, time::Duration};
 
 use iced::{
-    Center, Element, Event, Fill, Subscription, Task, Theme, clipboard, event,
+    Element, Event, Subscription, Task, Theme, clipboard, event,
     futures::{FutureExt, SinkExt, stream::unfold},
     keyboard, stream,
-    widget::{button, column, container, operation, row, space, text},
+    widget::{column, operation},
     window,
 };
 use tokio::sync::mpsc;
@@ -19,7 +19,7 @@ use crate::{
     ui::{
         modal,
         screens::{Screen, build_history, cache_settings, overview, settings},
-        style::{self, buttons, containers, spacing},
+        style, toolbar,
     },
 };
 
@@ -28,6 +28,7 @@ mod tests;
 
 pub struct App {
     screen: Screen,
+    settings_menu_open: bool,
     i18n: I18n,
     theme: Theme,
     home: Option<PathBuf>,
@@ -58,6 +59,7 @@ pub struct App {
 #[derive(Clone)]
 pub enum Message {
     WindowCloseRequested(window::Id),
+    OpenSettingsMenu,
     OpenSettings,
     OpenCacheSettings,
     BuildHistory(build_history::Message),
@@ -90,6 +92,7 @@ impl App {
         let (journal, receiver) = mpsc::channel(256);
         let app = Self {
             screen: Screen::Overview,
+            settings_menu_open: false,
             i18n: I18n::system(),
             theme: style::theme(),
             home: env::home_dir(),
@@ -192,7 +195,11 @@ impl App {
         let close = window::close_requests().map(Message::WindowCloseRequested);
         let cache = matches!(self.screen, Screen::CacheSettings(_));
         let history = matches!(self.screen, Screen::BuildHistory(_));
-        if history || cache || matches!(&self.screen, Screen::Settings(state) if !state.saving()) {
+        if self.settings_menu_open
+            || history
+            || cache
+            || matches!(&self.screen, Screen::Settings(state) if !state.saving())
+        {
             Subscription::batch([
                 close,
                 event::listen_with(|event, status, _| match (event, status) {
@@ -225,9 +232,15 @@ impl App {
                 self.pending_close = Some(id);
                 return self.finish_pending_close();
             }
+            Message::OpenSettingsMenu
+                if !self.loading && matches!(self.screen, Screen::Overview) =>
+            {
+                self.settings_menu_open = true;
+            }
             Message::Overview(overview::Message::OpenBuildHistory)
                 if !self.loading && !self.is_busy() && matches!(self.screen, Screen::Overview) =>
             {
+                self.settings_menu_open = false;
                 self.screen = Screen::BuildHistory(build_history::State::default());
                 return self.refresh_history();
             }
@@ -252,12 +265,14 @@ impl App {
             Message::OpenCacheSettings
                 if !self.loading && matches!(self.screen, Screen::Overview) =>
             {
+                self.settings_menu_open = false;
                 self.screen = Screen::CacheSettings(Box::new(cache_settings::State::new(
                     self.cache.as_ref().ok().and_then(Option::as_ref),
                     attic::available(env::var_os("PATH").as_deref()),
                 )));
             }
             Message::OpenSettings if !self.loading && matches!(self.screen, Screen::Overview) => {
+                self.settings_menu_open = false;
                 self.screen = Screen::Settings(Box::new(settings::State::new(
                     self.config.as_ref(),
                     self.home.as_deref(),
@@ -450,6 +465,7 @@ impl App {
                 }
             }
             Message::DismissDialog => match self.screen {
+                Screen::Overview => self.settings_menu_open = false,
                 Screen::BuildHistory(_) => {
                     return self.update_history(build_history::Message::Close);
                 }
@@ -514,7 +530,8 @@ impl App {
                     }
                 }
             },
-            Message::OpenSettings
+            Message::OpenSettingsMenu
+            | Message::OpenSettings
             | Message::OpenCacheSettings
             | Message::Overview(overview::Message::OpenBuildHistory)
             | Message::HistoryLoaded(_, _) => {}
@@ -896,7 +913,18 @@ impl App {
 
     pub fn view(&self) -> Element<'_, Message> {
         let dialog = match &self.screen {
-            Screen::Overview => None,
+            Screen::Overview => self.settings_menu_open.then(|| {
+                toolbar::settings_menu(
+                    [
+                        (self.i18n.text("app-open-settings"), Message::OpenSettings),
+                        (
+                            self.i18n.text("app-open-cache-settings"),
+                            Message::OpenCacheSettings,
+                        ),
+                    ],
+                    Message::DismissDialog,
+                )
+            }),
             Screen::BuildHistory(state) => Some(
                 state
                     .view(
@@ -952,26 +980,12 @@ impl App {
             &self.overview,
         )
         .map(Message::Overview);
-        let toolbar = row![
-            text(self.title()).size(22),
-            space().width(Fill),
-            button(text(self.i18n.text("app-open-cache-settings")))
-                .padding([7, 12])
-                .style(buttons::secondary)
-                .on_press_maybe((!self.loading).then_some(Message::OpenCacheSettings)),
-            button(text(self.i18n.text("app-open-settings")))
-                .padding([7, 12])
-                .style(buttons::secondary)
-                .on_press_maybe((!self.loading).then_some(Message::OpenSettings)),
-        ]
-        .align_y(Center)
-        .spacing(spacing::LG);
-
         column![
-            container(toolbar)
-                .padding([10.0, spacing::PAGE_PADDING])
-                .width(Fill)
-                .style(containers::toolbar),
+            toolbar::view(
+                self.title(),
+                self.settings_menu_open,
+                (!self.loading).then_some(Message::OpenSettingsMenu),
+            ),
             content,
         ]
         .into()

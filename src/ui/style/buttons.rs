@@ -18,6 +18,16 @@ pub fn danger(_theme: &Theme, status: button::Status) -> button::Style {
     style
 }
 
+pub fn menu_item(_theme: &Theme, status: button::Status) -> button::Style {
+    let selected = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    button::Style {
+        background: selected.then_some(colors::BORDER_MUTED.into()),
+        border: iced::Border::default().rounded(radius::CONTROL),
+        text_color: colors::TEXT,
+        ..button::Style::default()
+    }
+}
+
 fn outlined(status: button::Status, text_color: iced::Color) -> button::Style {
     let (background, border, text_color) = match status {
         button::Status::Disabled => (

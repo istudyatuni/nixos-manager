@@ -101,15 +101,13 @@ fn boot_with_cache(cache: Result<Option<attic::Metadata>, attic::LoadError>) -> 
 }
 
 #[tokio::test]
-async fn cache_toolbar_button_opens_a_separate_dialog_without_a_repository() {
+async fn toolbar_settings_menu_opens_both_dialogs_without_a_repository() {
     let mut app = boot_with_cache(Ok(None));
     let renderer = headless().await;
     let size = Size::new(800.0, 540.0);
-    let messages = {
+    let click = |app: &App, point: Point| {
         let mut view = app.view();
-        let (mut tree, node, labels) = layout(&mut view, &renderer, size);
-        let button = labels.bounds("Cache Settings");
-        assert!(button.x + button.width < labels.bounds("Settings").x);
+        let (mut tree, node, _) = layout(&mut view, &renderer, size);
 
         let mut messages = Vec::new();
         for event in [
@@ -120,7 +118,7 @@ async fn cache_toolbar_button_opens_a_separate_dialog_without_a_repository() {
                 &mut tree,
                 &Event::Mouse(event),
                 Layout::new(&node),
-                mouse::Cursor::Available(button.center()),
+                mouse::Cursor::Available(point),
                 &renderer,
                 &mut clipboard::Null,
                 &mut Shell::new(&mut messages),
@@ -129,8 +127,54 @@ async fn cache_toolbar_button_opens_a_separate_dialog_without_a_repository() {
         }
         messages
     };
-    assert!(matches!(messages.as_slice(), [Message::OpenCacheSettings]));
-    let _ = app.update(messages.into_iter().next().unwrap());
+
+    let closed = layout(&mut app.view(), &renderer, size).2;
+    let gear = closed.bounds(toolbar::SETTINGS_GEAR);
+    for point in [gear.center(), closed.bounds(&app.title()).center()] {
+        let _ = app.update(Message::OpenSettingsMenu);
+        let messages = click(&app, point);
+        assert!(matches!(messages.as_slice(), [Message::DismissDialog]));
+        let _ = app.update(messages.into_iter().next().unwrap());
+        assert!(!app.settings_menu_open);
+    }
+
+    let application_settings = "Application Settings";
+    let cache_settings = "Cache Settings";
+    for (label, expected) in [
+        (application_settings, Message::OpenSettings),
+        (cache_settings, Message::OpenCacheSettings),
+    ] {
+        let closed = layout(&mut app.view(), &renderer, size).2;
+        assert!(
+            closed
+                .text
+                .iter()
+                .all(|(label, _)| label != application_settings && label != cache_settings)
+        );
+        let messages = click(&app, gear.center());
+        assert!(matches!(messages.as_slice(), [Message::OpenSettingsMenu]));
+        let _ = app.update(messages.into_iter().next().unwrap());
+
+        let menu = layout(&mut app.view(), &renderer, size).2;
+        let settings = menu.bounds(application_settings);
+        assert!(gear.y + gear.height < settings.y);
+        assert!(settings.y < menu.bounds(cache_settings).y);
+
+        let messages = click(&app, menu.bounds(label).center());
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            std::mem::discriminant(&messages[0]),
+            std::mem::discriminant(&expected)
+        );
+        let _ = app.update(messages.into_iter().next().unwrap());
+        assert!(!app.settings_menu_open);
+        if matches!(expected, Message::OpenSettings) {
+            assert!(matches!(app.screen, Screen::Settings(_)));
+            let dialog = layout(&mut app.view(), &renderer, size).2;
+            assert!(dialog.text.iter().any(|(title, _)| title == label));
+            let _ = app.update(Message::Settings(settings::Message::Cancel));
+        }
+    }
     assert!(app.config.is_none());
     assert!(matches!(app.screen, Screen::CacheSettings(_)));
 
@@ -439,9 +483,6 @@ async fn compact_cache_settings_can_scroll_to_connection_errors() {
     app.set_language(LanguagePreference::Russian);
     let renderer = headless().await;
     let size = Size::new(560.0 / 1.5, 420.0 / 1.5);
-    let toolbar = layout(&mut app.view(), &renderer, size).2;
-    assert!(toolbar.bounds("Настройки кеша").x < toolbar.bounds("Настройки").x);
-    assert!(toolbar.bounds("Настройки").x + toolbar.bounds("Настройки").width <= size.width);
 
     let mut state = cache_settings::State::new(None, true);
     let token = jwt(NOW + 3600, serde_json::json!({ "main": { "r": 1 } }));
