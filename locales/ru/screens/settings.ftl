@@ -24,7 +24,6 @@ settings-branch-head-unavailable = Не удалось определить ве
 settings-flake-directory = Поддиректория с flake.nix
 settings-flake-directory-placeholder = (корневая директория)
 settings-flake-directory-hint = Путь относительно репозитория.
-settings-close = Закрыть
 settings-cancel = Отмена
 settings-save = Сохранить
 settings-saving = Сохранение…

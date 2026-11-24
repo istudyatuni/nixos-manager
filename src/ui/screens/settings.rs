@@ -7,7 +7,7 @@ use fluent_bundle::FluentArgs;
 use iced::{
     Center, Element, Fill,
     task::Handle,
-    widget::{Column, Row, button, column, pick_list, row, scrollable, space, text, tooltip},
+    widget::{Column, Row, button, column, pick_list, row, scrollable, space, text},
 };
 
 use crate::{
@@ -18,9 +18,9 @@ use crate::{
     git::{self, Branch, RemoteBranchesError, RemoteRefs},
     i18n::{I18n, LanguagePreference},
     ui::{
-        components::text_input::text_input,
+        components::{icon_button, text_input::text_input},
         modal,
-        style::{buttons, colors, containers, pick_lists, spacing},
+        style::{buttons, colors, pick_lists, spacing},
     },
 };
 
@@ -504,22 +504,10 @@ impl State {
             .padding([7, 12])
             .style(buttons::secondary)
             .on_press_maybe(editing.then_some(Message::Cancel));
-        let close = tooltip(
-            button(text("×").size(20).center())
-                .width(32)
-                .height(32)
-                .padding(0)
-                .style(buttons::secondary)
-                .on_press_maybe(editing.then_some(Message::Cancel)),
-            text(i18n.text("settings-close")).size(13),
-            tooltip::Position::Bottom,
-        )
-        .style(containers::card);
-
         let header = row![
             text(i18n.text("app-open-settings")).size(22),
             space().width(Fill),
-            close
+            icon_button::close(i18n.text("app-close"), editing.then_some(Message::Cancel)),
         ]
         .align_y(Center)
         .spacing(spacing::LG);

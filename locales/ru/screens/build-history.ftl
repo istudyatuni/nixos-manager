@@ -1,7 +1,6 @@
 history-title = История сборок
 history-refresh = Обновить
 history-refresh-help = Перечитать историю сборок и список системных поколений NixOS
-history-close = Закрыть
 history-back = Назад
 history-loading = Загрузка системных конфигураций…
 history-unavailable = Не удалось загрузить историю сборок. Попробуйте обновить список.

@@ -1033,6 +1033,14 @@ async fn build_history_activation_icon_shows_a_tooltip_and_selects_the_target() 
 
 #[tokio::test]
 async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
+    #[derive(Clone, Copy)]
+    enum Control {
+        Trash,
+        Remove,
+        Backdrop,
+        Close,
+    }
+
     let mut app = boot_with_cache(Ok(None));
     app.set_language(LanguagePreference::Russian);
     let mut snapshot = history::Snapshot::default();
@@ -1051,7 +1059,7 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
     state.set_snapshot(&app.i18n, &snapshot);
     let renderer = headless().await;
     let size = Size::new(560.0, 420.0);
-    let interact = |state: &build_history::State, size, click_trash, marked| {
+    let interact = |state: &build_history::State, size: Size, control, marked| {
         let viewport = Rectangle::with_size(size);
         let mut view = state
             .view(&app.i18n, Some(&snapshot), false, None, None)
@@ -1076,10 +1084,11 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
         let [trash] = controls.as_slice() else {
             panic!("expected one trash button, found {controls:?}")
         };
-        let position = if click_trash {
-            trash.center()
-        } else {
-            remove.center()
+        let position = match control {
+            Control::Trash => trash.center(),
+            Control::Remove => remove.center(),
+            Control::Backdrop => Point::new(size.width / 2.0, 4.0),
+            Control::Close => close,
         };
         let layout = Layout::new(&node);
         let widget = view.as_widget_mut();
@@ -1099,7 +1108,10 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
                 &mut Shell::new(&mut messages),
                 &viewport,
             );
-            if click_trash && matches!(event, mouse::Event::CursorMoved { .. }) {
+            if matches!(
+                (control, event),
+                (Control::Trash, mouse::Event::CursorMoved { .. })
+            ) {
                 assert!(
                     widget
                         .overlay(&mut tree, layout, &renderer, &viewport, Vector::ZERO)
@@ -1109,9 +1121,18 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
         }
         messages
     };
-    assert!(interact(&state, size, false, false).is_empty());
+    assert!(interact(&state, size, Control::Remove, false).is_empty());
     for marked in [false, true, false] {
-        let messages = interact(&state, size, true, marked);
+        let messages = interact(&state, size, Control::Backdrop, marked);
+        if marked {
+            assert!(messages.is_empty());
+        } else {
+            assert!(matches!(
+                messages.as_slice(),
+                [Message::BuildHistory(build_history::Message::Dismiss)]
+            ));
+        }
+        let messages = interact(&state, size, Control::Trash, marked);
         let [Message::BuildHistory(message @ build_history::Message::ToggleRemoval(removal))] =
             messages.as_slice()
         else {
@@ -1121,7 +1142,24 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
         let _ = state.update(message.clone(), Some(&snapshot), false, true);
     }
     assert!(matches!(
-        interact(&state, size, false, true).as_slice(),
+        state.update(
+            build_history::Message::Dismiss,
+            Some(&snapshot),
+            false,
+            true
+        ),
+        build_history::Action::None
+    ));
+    assert!(matches!(
+        interact(&state, size, Control::Close, true).as_slice(),
+        [Message::BuildHistory(build_history::Message::Close)]
+    ));
+    assert!(matches!(
+        state.update(build_history::Message::Close, Some(&snapshot), false, true),
+        build_history::Action::Close
+    ));
+    assert!(matches!(
+        interact(&state, size, Control::Remove, true).as_slice(),
         [Message::BuildHistory(build_history::Message::Remove)]
     ));
     assert!(matches!(
@@ -1141,7 +1179,7 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
     state.set_snapshot(&app.i18n, &snapshot);
     let compact = Size::new(560.0 / 1.5, 170.0);
     assert!(matches!(
-        interact(&state, compact, false, true).as_slice(),
+        interact(&state, compact, Control::Remove, true).as_slice(),
         [Message::BuildHistory(build_history::Message::Remove)]
     ));
     snapshot.targets[0].system.generations = vec![42];

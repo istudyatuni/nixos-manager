@@ -24,6 +24,7 @@ use crate::{
 #[derive(Clone)]
 pub enum Message {
     Close,
+    Dismiss,
     Refresh,
     Select(ReadyTarget),
     Back,
@@ -68,6 +69,7 @@ impl State {
     ) -> Action {
         match message {
             Message::Close if !self.removing => return Action::Close,
+            Message::Dismiss if self.can_dismiss() => return Action::Close,
             Message::Refresh if !self.removing && snapshot.is_some() => return Action::Refresh,
             Message::Select(selection) if can_activate && !self.removing => {
                 let path = Content::with_text(&selection.path().to_string_lossy());
@@ -125,6 +127,10 @@ impl State {
             .iter()
             .find(|row| row.removal.as_ref() == Some(removal))
             .is_some_and(|row| snapshot.targets[row.target_index].can_mark(removal, &self.marked))
+    }
+
+    fn can_dismiss(&self) -> bool {
+        !self.removing && self.marked.is_empty()
     }
 
     fn system_marked(&self) -> bool {
@@ -191,6 +197,7 @@ impl State {
                     path,
                     can_activate,
                     snapshot.is_some_and(|snapshot| snapshot.warns_about_switch(selection.path())),
+                    !self.marked.is_empty(),
                 ),
                 None => list(
                     i18n,
@@ -201,7 +208,7 @@ impl State {
                     missing_removal_tool,
                 ),
             },
-            (!self.removing).then_some(Message::Close),
+            self.can_dismiss().then_some(Message::Dismiss),
         )
     }
 }
@@ -269,11 +276,9 @@ fn list<'a>(
     let header = row![
         text(i18n.text("history-title")).size(22),
         space().width(Fill),
-        icon_button::view(
-            text("×").size(20),
-            i18n.text("history-close"),
+        icon_button::close(
+            i18n.text("app-close"),
             (!state.removing).then_some(Message::Close),
-            buttons::secondary,
         ),
     ]
     .align_y(Center)
@@ -499,6 +504,7 @@ fn confirmation<'a>(
     path: &'a Content,
     can_activate: bool,
     warns_about_switch: bool,
+    show_close: bool,
 ) -> Element<'a, Message> {
     let warning = if warns_about_switch {
         "history-switch-warning"
@@ -506,7 +512,13 @@ fn confirmation<'a>(
         "history-activation-warning"
     };
     column![
-        text(i18n.text("history-activate-confirm")).size(22),
+        row![
+            text(i18n.text("history-activate-confirm")).size(22),
+            show_close.then(|| space().width(Fill)),
+            show_close.then(|| icon_button::close(i18n.text("app-close"), Some(Message::Close))),
+        ]
+        .align_y(Center)
+        .spacing(spacing::LG),
         scrollable(
             column![
                 selectable_text::view(path, Font::DEFAULT, 16, colors::TEXT, |action| {

@@ -497,7 +497,7 @@ impl App {
                     self.overview.actions_menu_open = false;
                 }
                 Screen::BuildHistory(_) => {
-                    return self.update_history(build_history::Message::Close);
+                    return self.update_history(build_history::Message::Dismiss);
                 }
                 Screen::CacheSettings(_) => {
                     return self.update_cache_settings(cache_settings::Message::Close);

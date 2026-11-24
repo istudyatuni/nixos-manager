@@ -3,7 +3,14 @@ use iced::{
     widget::{button, container, text, tooltip},
 };
 
-use crate::ui::style::{containers, spacing};
+use crate::ui::style::{buttons, containers, spacing};
+
+pub fn close<'a, Message: Clone + 'a>(
+    label: String,
+    on_press: Option<Message>,
+) -> Element<'a, Message> {
+    view(text("×").size(20), label, on_press, buttons::secondary)
+}
 
 pub fn view<'a, Message: Clone + 'a>(
     icon: impl Into<Element<'a, Message>>,

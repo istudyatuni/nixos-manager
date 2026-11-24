@@ -10,7 +10,7 @@ use crate::{
     attic::{self, FailureKind, Metadata, Stage, TokenError, ValidationError},
     i18n::I18n,
     ui::{
-        components::text_input::text_input,
+        components::{icon_button, text_input::text_input},
         modal,
         style::{buttons, colors, pick_lists, spacing},
     },
@@ -36,12 +36,7 @@ impl State {
         let header = row![
             text(i18n.text("app-open-cache-settings")).size(22),
             space().width(Fill),
-            button(text("×").size(20).center())
-                .width(32)
-                .height(32)
-                .padding(0)
-                .style(buttons::secondary)
-                .on_press(Message::Close),
+            icon_button::close(i18n.text("app-close"), Some(Message::Close)),
         ]
         .align_y(Center)
         .spacing(spacing::LG);

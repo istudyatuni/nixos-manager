@@ -24,7 +24,6 @@ settings-branch-head-unavailable = Could not find the default branch. Enter a br
 settings-flake-directory = Subdirectory containing flake.nix
 settings-flake-directory-placeholder = (repository root)
 settings-flake-directory-hint = Path relative to the repository.
-settings-close = Close
 settings-cancel = Cancel
 settings-save = Save
 settings-saving = Saving…
