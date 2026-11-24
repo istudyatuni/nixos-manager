@@ -829,7 +829,7 @@ async fn build_history_shows_system_configurations_without_a_repository() {
     let close = labels.bounds("×");
     assert!(close.x >= title.x + title.width);
     assert!(close.y + close.height <= viewport.y);
-    let refresh = labels.bounds("Обновить");
+    let refresh = labels.bounds("↻");
     assert!(
         refresh.y >= viewport.y + viewport.height && refresh.y + refresh.height <= compact.height
     );
@@ -1037,6 +1037,7 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
     enum Control {
         Trash,
         Remove,
+        Refresh,
         Backdrop,
         Close,
     }
@@ -1066,7 +1067,7 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
             .map(Message::BuildHistory);
         let (mut tree, node, labels) = layout(&mut view, &renderer, size);
         let remove = labels.bounds("Удалить выбранные");
-        let refresh = labels.bounds("Обновить");
+        let refresh = labels.bounds("↻");
         assert!(remove.x < refresh.x);
         assert!(remove.y + remove.height <= size.height);
         assert!(refresh.y + refresh.height <= size.height);
@@ -1078,7 +1079,11 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
         let mut controls: Vec<_> = labels
             .containers
             .into_iter()
-            .filter(|bounds| bounds.size() == Size::new(34.0, 34.0) && !bounds.contains(close))
+            .filter(|bounds| {
+                bounds.size() == Size::new(34.0, 34.0)
+                    && !bounds.contains(close)
+                    && !bounds.contains(refresh.center())
+            })
             .collect();
         controls.dedup();
         let [trash] = controls.as_slice() else {
@@ -1087,6 +1092,7 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
         let position = match control {
             Control::Trash => trash.center(),
             Control::Remove => remove.center(),
+            Control::Refresh => refresh.center(),
             Control::Backdrop => Point::new(size.width / 2.0, 4.0),
             Control::Close => close,
         };
@@ -1110,7 +1116,10 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
             );
             if matches!(
                 (control, event),
-                (Control::Trash, mouse::Event::CursorMoved { .. })
+                (
+                    Control::Trash | Control::Refresh,
+                    mouse::Event::CursorMoved { .. }
+                )
             ) {
                 assert!(
                     widget
@@ -1121,6 +1130,10 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
         }
         messages
     };
+    assert!(matches!(
+        interact(&state, size, Control::Refresh, false).as_slice(),
+        [Message::BuildHistory(build_history::Message::Refresh)]
+    ));
     assert!(interact(&state, size, Control::Remove, false).is_empty());
     for marked in [false, true, false] {
         let messages = interact(&state, size, Control::Backdrop, marked);

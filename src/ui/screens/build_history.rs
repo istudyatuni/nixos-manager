@@ -257,43 +257,33 @@ fn list<'a>(
             .gap(spacing::SM)
             .style(containers::card)
         });
-    let has_rollback = rollback_action.is_some();
     let right_actions = row![
-        tooltip(
-            button(text(i18n.text("history-refresh")))
-                .padding([7, 12])
-                .style(buttons::secondary)
-                .on_press_maybe(
-                    (snapshot.is_some() && !state.removing).then_some(Message::Refresh)
-                ),
-            text(i18n.text("history-refresh-help"))
-                .size(13)
-                .wrapping(text::Wrapping::WordOrGlyph),
-            tooltip::Position::Top,
-        )
-        .gap(spacing::SM)
-        .style(containers::card),
+        icon_button::view(
+            text("↻").size(20),
+            i18n.text("history-refresh-help"),
+            (snapshot.is_some() && !state.removing).then_some(Message::Refresh),
+            buttons::secondary,
+        ),
         rollback_action,
     ]
+    .align_y(Center)
     .spacing(spacing::MD);
     let actions = row![
-        button(text(i18n.text(delete_label)))
-            .padding([7, 12])
-            .style(buttons::danger)
-            .on_press_maybe(
-                state
-                    .can_remove(snapshot, missing_removal_tool.is_none())
-                    .then_some(Message::Remove),
-            ),
-        (!has_rollback).then(|| space().width(Fill)),
+        container(
+            button(text(i18n.text(delete_label)).wrapping(text::Wrapping::WordOrGlyph))
+                .padding([7, 12])
+                .style(buttons::danger)
+                .on_press_maybe(
+                    state
+                        .can_remove(snapshot, missing_removal_tool.is_none())
+                        .then_some(Message::Remove),
+                ),
+        )
+        .width(Fill),
         right_actions,
     ]
+    .align_y(Center)
     .spacing(spacing::MD);
-    let actions: Element<'_, Message> = if has_rollback {
-        actions.wrap().into()
-    } else {
-        actions.into()
-    };
     let mut deletion_notices = column![].spacing(spacing::MD);
     if let Some(error) = state.removal_error {
         let key = match error {

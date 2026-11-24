@@ -1,5 +1,4 @@
 history-title = История сборок
-history-refresh = Обновить
 history-refresh-help = Перечитать историю сборок и список системных поколений NixOS
 history-back = Назад
 history-loading = Загрузка системных конфигураций…
