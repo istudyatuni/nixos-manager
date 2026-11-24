@@ -1249,6 +1249,68 @@ async fn build_history_confirmations_show_activation_and_rollback_details() {
 }
 
 #[tokio::test]
+async fn build_history_shows_a_disabled_rollback_button_with_a_tooltip() {
+    let mut app = boot_with_cache(Ok(None));
+    app.set_language(LanguagePreference::Russian);
+    let renderer = headless().await;
+    let size = Size::new(560.0 / 1.5, 420.0 / 1.5);
+    let viewport = Rectangle::with_size(size);
+    let state = build_history::State::default();
+    let empty = history::Snapshot::default();
+    let mut unavailable = history::Snapshot::default();
+    unavailable.unavailable = true;
+
+    for snapshot in [None, Some(&unavailable), Some(&empty)] {
+        let can_activate = snapshot.is_some_and(|snapshot| !snapshot.unavailable);
+        let mut view = state
+            .view(&app.i18n, snapshot, can_activate, None, None)
+            .map(Message::BuildHistory);
+        let (mut tree, node, labels) = layout(&mut view, &renderer, size);
+        let button = labels.bounds("Откатить");
+        let position = button.center();
+        assert!(viewport.contains(position));
+        let mut messages = Vec::new();
+        let widget = view.as_widget_mut();
+        for event in [
+            mouse::Event::CursorMoved { position },
+            mouse::Event::ButtonPressed(mouse::Button::Left),
+            mouse::Event::ButtonReleased(mouse::Button::Left),
+        ] {
+            widget.update(
+                &mut tree,
+                &Event::Mouse(event),
+                Layout::new(&node),
+                mouse::Cursor::Available(position),
+                &renderer,
+                &mut clipboard::Null,
+                &mut Shell::new(&mut messages),
+                &viewport,
+            );
+        }
+        assert!(!messages.iter().any(|message| matches!(
+            message,
+            Message::BuildHistory(build_history::Message::Select { .. })
+        )));
+        let mut tooltip = widget
+            .overlay(
+                &mut tree,
+                Layout::new(&node),
+                &renderer,
+                &viewport,
+                Vector::ZERO,
+            )
+            .expect("disabled rollback tooltip");
+        let node = tooltip.as_overlay_mut().layout(&renderer, size);
+        let mut label_layout = Layout::new(&node);
+        while let Some(child) = label_layout.children().next() {
+            label_layout = child;
+        }
+        let hint = label_layout.bounds();
+        assert!(hint.width > 0.0 && hint.y + hint.height <= button.y);
+    }
+}
+
+#[tokio::test]
 async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
     #[derive(Clone, Copy)]
     enum Control {

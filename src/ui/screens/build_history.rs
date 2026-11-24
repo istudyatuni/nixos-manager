@@ -265,28 +265,37 @@ fn list<'a>(
     } else {
         "history-remove-selected"
     };
-    let rollback_action = snapshot
-        .and_then(|snapshot| snapshot.quick_rollback.as_ref())
-        .map(|rollback| {
-            let rollback_button = button(text(i18n.text("history-quick-rollback")))
-                .padding([7, 12])
-                .style(buttons::primary)
-                .on_press_maybe(can_activate.then(|| Message::Select {
+    let rollback = snapshot.and_then(|snapshot| snapshot.quick_rollback.as_ref());
+    let rollback_hint = match (snapshot, rollback, missing_tool) {
+        (None, _, _) => i18n.text("history-loading"),
+        (Some(snapshot), _, _) if snapshot.unavailable => i18n.text("history-unavailable"),
+        (_, None, _) => i18n.text("history-quick-rollback-no-target"),
+        _ if state.removing => i18n.text("history-removing"),
+        (_, _, Some(program)) => missing_tool_message(i18n, program),
+        _ => i18n.text("history-quick-rollback-help"),
+    };
+    let rollback_button = button(text(i18n.text("history-quick-rollback")))
+        .padding([7, 12])
+        .style(buttons::primary)
+        .on_press_maybe(
+            rollback
+                .filter(|_| can_activate)
+                .map(|rollback| Message::Select {
                     target: ReadyTarget::Quick(rollback.clone()),
                     generation: None,
-                }));
-            tooltip(
-                mouse_area(rollback_button)
-                    .on_enter(Message::HoverRollback(true))
-                    .on_exit(Message::HoverRollback(false)),
-                text(i18n.text("history-quick-rollback-help"))
-                    .size(13)
-                    .wrapping(text::Wrapping::WordOrGlyph),
-                tooltip::Position::Top,
-            )
-            .gap(spacing::SM)
-            .style(containers::card)
-        });
+                }),
+        );
+    let rollback_action = tooltip(
+        mouse_area(rollback_button)
+            .on_enter(Message::HoverRollback(true))
+            .on_exit(Message::HoverRollback(false)),
+        text(rollback_hint)
+            .size(13)
+            .wrapping(text::Wrapping::WordOrGlyph),
+        tooltip::Position::Top,
+    )
+    .gap(spacing::SM)
+    .style(containers::card);
     let right_actions = row![
         icon_button::view(
             text("↻").size(20),
@@ -329,7 +338,7 @@ fn list<'a>(
         if let Some(program) = missing_removal_tool
             && Some(program) != activation_tool
         {
-            deletion_notices = deletion_notices.push(tool_notice(i18n, program));
+            deletion_notices = deletion_notices.push(notice(missing_tool_message(i18n, program)));
         }
     }
     let header = row![
@@ -348,7 +357,7 @@ fn list<'a>(
             entries = entries.push(notice(i18n.text("history-unavailable")));
         }
         if let Some(program) = activation_tool {
-            entries = entries.push(tool_notice(i18n, program));
+            entries = entries.push(notice(missing_tool_message(i18n, program)));
         }
         if snapshot.targets.is_empty() && !snapshot.unavailable {
             entries = entries.push(text(i18n.text("history-empty")));
@@ -575,10 +584,10 @@ fn target_row<'a>(
     .into()
 }
 
-fn tool_notice<'a>(i18n: &I18n, program: &str) -> iced::widget::Text<'a> {
+fn missing_tool_message(i18n: &I18n, program: &str) -> String {
     let mut args = FluentArgs::new();
     args.set("program", program);
-    notice(i18n.with_args("overview-rebuild-tool-unavailable", &args))
+    i18n.with_args("overview-rebuild-tool-unavailable", &args)
 }
 
 fn profile_caption(i18n: &I18n) -> Element<'static, Message> {

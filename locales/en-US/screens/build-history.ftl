@@ -6,6 +6,7 @@ history-unavailable = Could not load build history. Try refreshing.
 history-empty = No system configurations found.
 history-quick-rollback = Roll Back
 history-quick-rollback-help = Restore previous active configuration
+history-quick-rollback-no-target = No previous active configuration is available to roll back to
 history-active = active
 history-booted = booted
 history-system-profile = system profile

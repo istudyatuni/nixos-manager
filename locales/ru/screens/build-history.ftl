@@ -6,6 +6,7 @@ history-unavailable = Не удалось загрузить историю сб
 history-empty = Системные конфигурации не найдены.
 history-quick-rollback = Откатить
 history-quick-rollback-help = Вернуть предыдущую активную конфигурацию
+history-quick-rollback-no-target = Нет доступной предыдущей активной конфигурации для отката
 history-active = активна
 history-booted = загружена
 history-system-profile = системный профиль
