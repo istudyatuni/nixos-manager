@@ -4,12 +4,36 @@ use iced::{
         Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer,
         widget::{Operation, Tree, tree},
     },
-    touch,
-    widget::space,
+    border, touch,
+    widget::{container, space, text},
     window,
 };
 
-use crate::ui::style::spacing;
+use crate::ui::style::{colors, containers, spacing};
+
+pub fn help<'a, Message: Clone + 'a>(description: String) -> Element<'a, Message> {
+    const ICON_SIZE: f32 = 16.0;
+    let icon = container(text("?").size(11).color(colors::INFO))
+        .center(ICON_SIZE)
+        .style(|_| {
+            container::Style::default().border(
+                border::rounded(ICON_SIZE / 2.0)
+                    .width(1)
+                    .color(colors::INFO),
+            )
+        });
+    on_hover(
+        icon,
+        container(
+            text(description)
+                .size(13)
+                .width(240)
+                .wrapping(text::Wrapping::WordOrGlyph),
+        )
+        .padding(spacing::MD)
+        .style(containers::card),
+    )
+}
 
 /// The caller supplies the panel while it is open and handles the dismiss message.
 pub fn on_click<'a, Message: Clone + 'a>(
@@ -25,7 +49,7 @@ pub fn on_click<'a, Message: Clone + 'a>(
 }
 
 /// Shows a passive panel that stays open as the pointer moves from the trigger onto it.
-pub fn on_hover<'a, Message: Clone + 'a>(
+fn on_hover<'a, Message: Clone + 'a>(
     trigger: impl Into<Element<'a, Message>>,
     panel: impl Into<Element<'a, Message>>,
 ) -> Element<'a, Message> {

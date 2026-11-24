@@ -234,12 +234,17 @@ fn configured<'a>(
     let steps = repository.steps;
     let needs_build = repository.needs_build;
     let options = row![
-        checkbox(steps.boot)
-            .label(i18n.text("overview-add-to-boot"))
-            .size(16)
-            .spacing(spacing::MD)
-            .style(inputs::checkbox_style)
-            .on_toggle_maybe((!repository.busy).then_some(Message::SetBoot)),
+        row![
+            checkbox(steps.boot)
+                .label(i18n.text("overview-add-to-boot"))
+                .size(16)
+                .spacing(spacing::MD)
+                .style(inputs::checkbox_style)
+                .on_toggle_maybe((!repository.busy).then_some(Message::SetBoot)),
+            popup::help(i18n.text("overview-add-to-boot-help")),
+        ]
+        .spacing(spacing::SM)
+        .align_y(Center),
         checkbox(steps.activate)
             .label(i18n.text("overview-activate"))
             .size(16)

@@ -11,6 +11,7 @@ overview-repository-branch = branch { $name }
 overview-repository-detached = Detached HEAD
 overview-repository-no-commit = —
 overview-add-to-boot = Add to boot
+overview-add-to-boot-help = Updates the boot menu and sets this configuration as the default. To apply it immediately, also enable “Activate”.
 overview-activate = Activate
 overview-build = Build
 overview-apply = Apply

@@ -11,6 +11,7 @@ overview-repository-branch = ветка { $name }
 overview-repository-detached = HEAD вне ветки
 overview-repository-no-commit = —
 overview-add-to-boot = Добавить в загрузку
+overview-add-to-boot-help = Обновляет меню загрузчика и выбирает эту конфигурацию для загрузки по умолчанию. Чтобы применить её сразу, также включите «Активировать».
 overview-activate = Активировать
 overview-build = Собрать
 overview-apply = Применить

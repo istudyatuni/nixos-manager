@@ -1,6 +1,6 @@
 use fluent_bundle::FluentArgs;
 use iced::{
-    Center, Element, Fill, Font, Shrink, border, padding,
+    Center, Element, Fill, Font, Shrink, padding,
     widget::{
         button, column, container, row, rule, scrollable, space, text,
         text_editor::{self, Content},
@@ -455,32 +455,11 @@ fn tool_notice<'a>(i18n: &I18n, program: &str) -> iced::widget::Text<'a> {
 }
 
 fn profile_caption(i18n: &I18n) -> Element<'static, Message> {
-    const ICON_SIZE: f32 = 16.0;
-    let icon = container(text("?").size(11).color(colors::INFO))
-        .center(ICON_SIZE)
-        .style(|_| {
-            container::Style::default().border(
-                border::rounded(ICON_SIZE / 2.0)
-                    .width(1)
-                    .color(colors::INFO),
-            )
-        });
-    let help = popup::on_hover(
-        icon,
-        container(
-            text(i18n.text("history-system-profile-help"))
-                .size(13)
-                .width(240)
-                .wrapping(text::Wrapping::WordOrGlyph),
-        )
-        .padding(spacing::MD)
-        .style(containers::card),
-    );
     row![
         text(i18n.text("history-system-profile"))
             .size(13)
             .color(colors::INFO),
-        help,
+        popup::help(i18n.text("history-system-profile-help")),
     ]
     .align_y(Center)
     .spacing(spacing::SM)
