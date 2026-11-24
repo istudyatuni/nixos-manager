@@ -913,6 +913,16 @@ async fn build_history_shows_system_configurations_without_a_repository() {
     let (viewport, _) = labels.scroll_viewport.expect("scrollable build history");
     let last_generation = labels.focusables.last().expect("selectable generation");
     assert!(last_generation.y > viewport.y + viewport.height);
+    let activate = labels.bounds("▶");
+    let activate_button = labels
+        .containers
+        .iter()
+        .find(|bounds| bounds.size() == Size::new(34.0, 34.0) && bounds.contains(activate.center()))
+        .expect("activation button");
+    let scrollbar_width = 10.0;
+    assert!(
+        activate_button.x + activate_button.width <= viewport.x + viewport.width - scrollbar_width
+    );
     let title = labels.bounds("История сборок");
     let close = labels.bounds("×");
     assert!(close.x >= title.x + title.width);

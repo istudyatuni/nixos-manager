@@ -338,7 +338,11 @@ fn list<'a>(
     let deletion_notices = (state.removal_error.is_some() || state.system_marked())
         .then(|| scrollable(deletion_notices).width(Fill).height(Shrink));
     // The body takes the height left over after laying out the header and actions.
-    let body = column![scrollable(entries).height(Fill), deletion_notices].spacing(spacing::MD);
+    let body = column![
+        scrollable(entries).height(Fill).spacing(spacing::MD),
+        deletion_notices,
+    ]
+    .spacing(spacing::MD);
     column![header, body, actions].spacing(spacing::LG).into()
 }
 
