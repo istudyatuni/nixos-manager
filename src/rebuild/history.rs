@@ -177,6 +177,16 @@ pub struct QuickRollback {
     previous_operation: DateTime<Utc>,
 }
 
+#[cfg(test)]
+impl QuickRollback {
+    pub(crate) fn for_test(target: impl Into<PathBuf>) -> Self {
+        Self {
+            target: target.into(),
+            previous_operation: DateTime::UNIX_EPOCH,
+        }
+    }
+}
+
 pub(super) struct Session {
     directory: PathBuf,
     auto_roots: PathBuf,

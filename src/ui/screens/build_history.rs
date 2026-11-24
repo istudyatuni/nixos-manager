@@ -27,7 +27,10 @@ pub enum Message {
     Dismiss,
     Refresh,
     HoverRollback(bool),
-    Select(ReadyTarget),
+    Select {
+        target: ReadyTarget,
+        generation: Option<u64>,
+    },
     Back,
     Activate,
     ToggleRemoval(Removal),
@@ -37,10 +40,15 @@ pub enum Message {
 
 #[derive(Clone, Copy)]
 pub enum TextTarget {
-    Path(usize),
+    Row(usize, DetailText),
+    Confirmation(DetailText),
+}
+
+#[derive(Clone, Copy)]
+pub enum DetailText {
+    Path,
     Generation(usize),
-    Note(usize, usize),
-    Confirmation,
+    Note(usize),
 }
 
 pub enum Action {
@@ -53,7 +61,7 @@ pub enum Action {
 
 #[derive(Default)]
 pub struct State {
-    selection: Option<(ReadyTarget, Content)>,
+    selection: Option<(ReadyTarget, TargetDetails)>,
     rollback_hovered: bool,
     rows: Vec<TargetRow>,
     marked: Vec<Removal>,
@@ -77,10 +85,35 @@ impl State {
                 return Action::Refresh;
             }
             Message::HoverRollback(hovered) => self.rollback_hovered = hovered,
-            Message::Select(selection) if can_activate && !self.removing => {
-                let path = Content::with_text(&selection.path().to_string_lossy());
+            Message::Select { target, generation } if can_activate && !self.removing => {
+                let mut rows = self.rows.iter().filter(|row| {
+                    snapshot
+                        .and_then(|snapshot| snapshot.targets.get(row.target_index))
+                        .is_some_and(|entry| entry.store_path == target.path())
+                });
+                let details = match &target {
+                    ReadyTarget::Selected(_) => rows
+                        .find(|row| row.generation == generation)
+                        .map(|row| row.details.clone()),
+                    ReadyTarget::Quick(_) => rows.next().map(|first| {
+                        let mut details = first.details.clone();
+                        for row in rows {
+                            details
+                                .generations
+                                .extend(row.details.generations.iter().cloned());
+                            details.notes.extend(row.details.notes.iter().cloned());
+                            details.profile_without_generation |=
+                                row.details.profile_without_generation;
+                        }
+                        details
+                    }),
+                }
+                .unwrap_or_else(|| TargetDetails {
+                    path: Content::with_text(&target.path().to_string_lossy()),
+                    ..TargetDetails::default()
+                });
                 self.rollback_hovered = false;
-                self.selection = Some((selection, path));
+                self.selection = Some((target, details));
             }
             Message::Back => self.selection = None,
             Message::Activate if can_activate && !self.removing => {
@@ -108,19 +141,15 @@ impl State {
                 return Action::Remove(self.marked.clone());
             }
             Message::SelectText(target, action) if !action.is_edit() => {
-                let content = match target {
-                    TextTarget::Path(row) => self.rows.get_mut(row).map(|row| &mut row.path),
-                    TextTarget::Generation(row) => self
-                        .rows
-                        .get_mut(row)
-                        .and_then(|row| row.generation.as_mut()),
-                    TextTarget::Note(row, note) => self
-                        .rows
-                        .get_mut(row)
-                        .and_then(|row| row.notes.get_mut(note)),
-                    TextTarget::Confirmation => self.selection.as_mut().map(|(_, path)| path),
+                let (details, field) = match target {
+                    TextTarget::Row(row, field) => {
+                        (self.rows.get_mut(row).map(|row| &mut row.details), field)
+                    }
+                    TextTarget::Confirmation(field) => {
+                        (self.selection.as_mut().map(|(_, details)| details), field)
+                    }
                 };
-                if let Some(content) = content {
+                if let Some(content) = details.and_then(|details| details.text_mut(field)) {
                     content.perform(action);
                 }
             }
@@ -199,9 +228,9 @@ impl State {
     ) -> Element<'a, Message> {
         modal::dialog(
             move || match &self.selection {
-                Some((selection, path)) => confirmation(
+                Some((selection, details)) => confirmation(
                     i18n,
-                    path,
+                    details,
                     can_activate,
                     snapshot.is_some_and(|snapshot| snapshot.warns_about_switch(selection.path())),
                     !self.marked.is_empty(),
@@ -242,9 +271,10 @@ fn list<'a>(
             let rollback_button = button(text(i18n.text("history-quick-rollback")))
                 .padding([7, 12])
                 .style(buttons::primary)
-                .on_press_maybe(
-                    can_activate.then(|| Message::Select(ReadyTarget::Quick(rollback.clone()))),
-                );
+                .on_press_maybe(can_activate.then(|| Message::Select {
+                    target: ReadyTarget::Quick(rollback.clone()),
+                    generation: None,
+                }));
             tooltip(
                 mouse_area(rollback_button)
                     .on_enter(Message::HoverRollback(true))
@@ -348,15 +378,39 @@ fn list<'a>(
 
 struct TargetRow {
     target_index: usize,
-    path: Content,
-    generation: Option<Content>,
-    profile_selected: bool,
-    notes: Vec<Content>,
+    generation: Option<u64>,
+    details: TargetDetails,
     removal: Option<Removal>,
 }
 
 impl TargetRow {
     fn new(i18n: &I18n, target_index: usize, target: &Target, number: Option<u64>) -> Self {
+        Self {
+            target_index,
+            generation: number,
+            details: TargetDetails::new(i18n, target, number),
+            removal: target.removal(number),
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct TargetDetails {
+    path: Content,
+    generations: Vec<GenerationDetails>,
+    booted: bool,
+    profile_without_generation: bool,
+    notes: Vec<Content>,
+}
+
+#[derive(Clone)]
+struct GenerationDetails {
+    label: Content,
+    profile_selected: bool,
+}
+
+impl TargetDetails {
+    fn new(i18n: &I18n, target: &Target, number: Option<u64>) -> Self {
         let notes = if number.is_none() {
             target
                 .builds
@@ -366,15 +420,92 @@ impl TargetRow {
         } else {
             Vec::new()
         };
+        let profile_selected =
+            target.system.profile_selected && number == target.system.selected_generation;
         Self {
-            target_index,
             path: Content::with_text(&target.store_path.to_string_lossy()),
-            generation: number.map(|number| Content::with_text(&generation_label(i18n, number))),
-            profile_selected: target.system.profile_selected
-                && number == target.system.selected_generation,
+            generations: number
+                .into_iter()
+                .map(|number| GenerationDetails {
+                    label: Content::with_text(&generation_label(i18n, number)),
+                    profile_selected,
+                })
+                .collect(),
+            booted: target.system.booted,
+            profile_without_generation: number.is_none() && profile_selected,
             notes,
-            removal: target.removal(number),
         }
+    }
+
+    fn text_mut(&mut self, field: DetailText) -> Option<&mut Content> {
+        match field {
+            DetailText::Path => Some(&mut self.path),
+            DetailText::Generation(index) => self
+                .generations
+                .get_mut(index)
+                .map(|entry| &mut entry.label),
+            DetailText::Note(line) => self.notes.get_mut(line),
+        }
+    }
+
+    fn view<'a>(
+        &'a self,
+        i18n: &I18n,
+        active: bool,
+        text_target: impl Fn(DetailText) -> TextTarget + Copy + 'a,
+    ) -> Element<'a, Message> {
+        let mut details = column![selectable_text::view(
+            &self.path,
+            Font::DEFAULT,
+            16,
+            colors::TEXT,
+            move |action| Message::SelectText(text_target(DetailText::Path), action),
+        )]
+        .spacing(spacing::SM)
+        .width(Fill);
+        let badges = [
+            (active, "history-active", colors::SUCCESS),
+            (self.booted, "history-booted", colors::INFO),
+        ];
+        if badges.iter().any(|(show, _, _)| *show) {
+            let statuses = row(badges
+                .into_iter()
+                .filter(|(show, _, _)| *show)
+                .map(|(_, key, color)| text(i18n.text(key)).size(13).color(color).into()))
+            .spacing(spacing::LG)
+            .wrap();
+            details = details.push(statuses);
+        }
+        if self.profile_without_generation {
+            details = details.push(profile_caption(i18n));
+        }
+        for (index, generation) in self.generations.iter().enumerate() {
+            let color = if generation.profile_selected {
+                details = details.push(profile_caption(i18n));
+                colors::INFO
+            } else {
+                colors::TEXT_MUTED
+            };
+            details = details.push(selectable_text::view(
+                &generation.label,
+                Font::DEFAULT,
+                13,
+                color,
+                move |action| {
+                    Message::SelectText(text_target(DetailText::Generation(index)), action)
+                },
+            ));
+        }
+        for (line, note) in self.notes.iter().enumerate() {
+            details = details.push(selectable_text::view(
+                note,
+                Font::DEFAULT,
+                13,
+                colors::TEXT_MUTED,
+                move |action| Message::SelectText(text_target(DetailText::Note(line)), action),
+            ));
+        }
+        details.into()
     }
 }
 
@@ -400,54 +531,11 @@ fn target_row<'a>(
             .quick_rollback
             .as_ref()
             .is_some_and(|rollback| rollback.target == target.store_path);
-    let mut details = column![selectable_text::view(
-        &labels.path,
-        Font::DEFAULT,
-        16,
-        colors::TEXT,
-        move |action| { Message::SelectText(TextTarget::Path(index), action) }
-    )]
-    .spacing(spacing::SM)
-    .width(Fill);
-    let badges = [
-        (target.system.active, "history-active", colors::SUCCESS),
-        (target.system.booted, "history-booted", colors::INFO),
-    ];
-    let statuses = row(badges
-        .into_iter()
-        .filter(|(show, _, _)| *show)
-        .map(|(_, key, color)| text(i18n.text(key)).size(13).color(color).into()))
-    .spacing(spacing::LG)
-    .wrap();
-    if badges.iter().any(|(show, _, _)| *show) {
-        details = details.push(statuses);
-    }
-    if labels.profile_selected {
-        details = details.push(profile_caption(i18n));
-    }
-    if let Some(generation) = &labels.generation {
-        let color = if labels.profile_selected {
-            colors::INFO
-        } else {
-            colors::TEXT_MUTED
-        };
-        details = details.push(selectable_text::view(
-            generation,
-            Font::DEFAULT,
-            13,
-            color,
-            move |action| Message::SelectText(TextTarget::Generation(index), action),
-        ));
-    }
-    for (line, note) in labels.notes.iter().enumerate() {
-        details = details.push(selectable_text::view(
-            note,
-            Font::DEFAULT,
-            13,
-            colors::TEXT_MUTED,
-            move |action| Message::SelectText(TextTarget::Note(index, line), action),
-        ));
-    }
+    let details = labels
+        .details
+        .view(i18n, target.system.active, move |field| {
+            TextTarget::Row(index, field)
+        });
     row![
         details,
         labels.removal.as_ref().map(|removal| {
@@ -470,8 +558,10 @@ fn target_row<'a>(
                 // Shift the triangle right to balance its wider left edge.
                 container(text("▶").size(14)).padding(padding::left(2)),
                 i18n.text("history-activate"),
-                can_activate
-                    .then(|| Message::Select(ReadyTarget::Selected(target.store_path.clone()))),
+                can_activate.then(|| Message::Select {
+                    target: ReadyTarget::Selected(target.store_path.clone()),
+                    generation: labels.generation,
+                }),
                 if highlight_activation {
                     buttons::highlighted
                 } else {
@@ -533,7 +623,7 @@ fn build_label(i18n: &I18n, build: &Build) -> String {
 
 fn confirmation<'a>(
     i18n: &I18n,
-    path: &'a Content,
+    details: &'a TargetDetails,
     can_activate: bool,
     warns_about_switch: bool,
     show_close: bool,
@@ -553,14 +643,13 @@ fn confirmation<'a>(
         .spacing(spacing::LG),
         scrollable(
             column![
-                selectable_text::view(path, Font::DEFAULT, 16, colors::TEXT, |action| {
-                    Message::SelectText(TextTarget::Confirmation, action)
-                }),
+                details.view(i18n, false, TextTarget::Confirmation),
                 notice(i18n.text(warning)),
             ]
             .spacing(spacing::LG),
         )
-        .height(Fill),
+        .height(Fill)
+        .spacing(spacing::MD),
         row![
             space().width(Fill),
             button(text(i18n.text("history-back")))

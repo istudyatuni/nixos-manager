@@ -1051,81 +1051,188 @@ async fn build_history_shows_system_configurations_without_a_repository() {
 }
 
 #[tokio::test]
-async fn build_history_activation_icon_shows_a_tooltip_and_selects_the_target() {
+async fn build_history_confirmations_show_activation_and_rollback_details() {
     let mut app = boot_with_cache(Ok(None));
     app.set_language(LanguagePreference::Russian);
     let mut state = build_history::State::default();
     let mut snapshot = history::Snapshot::default();
     let inactive_path = "/nix/store/inactive-system";
-    for (path, active, generation) in [
-        ("/nix/store/active-system", true, 2),
-        (inactive_path, false, 1),
-    ] {
-        snapshot.targets.push(history::Target {
-            store_path: path.into(),
-            builds: Vec::new(),
-            system: SystemTarget {
-                generations: vec![generation],
-                active,
-                booted: active,
-                ..SystemTarget::default()
-            },
-        });
-    }
+    snapshot.targets.push(history::Target {
+        store_path: "/nix/store/active-system".into(),
+        builds: Vec::new(),
+        system: SystemTarget {
+            generations: vec![2],
+            active: true,
+            ..SystemTarget::default()
+        },
+    });
+    snapshot.targets.push(history::Target {
+        store_path: inactive_path.into(),
+        builds: ["main", "stable"]
+            .map(|branch| {
+                serde_json::from_value(serde_json::json!({
+                    "id": branch,
+                    "gc_root": format!("builds/{branch}/result"),
+                    "store_path": inactive_path,
+                    "source": { "kind": "built", "branch": branch, "revision": "0123456789abcdef" },
+                    "built_at": "2026-01-02T03:04:05Z"
+                }))
+                .expect("build record")
+            })
+            .into(),
+        system: SystemTarget {
+            generations: vec![1, 0],
+            selected_generation: Some(1),
+            profile_selected: true,
+            booted: true,
+            ..SystemTarget::default()
+        },
+    });
     state.set_snapshot(&app.i18n, &snapshot);
 
     let renderer = headless().await;
-    let size = Size::new(560.0, 420.0);
+    let size = Size::new(560.0, 540.0);
+    let compact = Size::new(560.0 / 1.5, 420.0 / 1.5);
     let viewport = Rectangle::with_size(size);
-    let mut view = state
-        .view(&app.i18n, Some(&snapshot), true, None, None)
-        .map(Message::BuildHistory);
-    let (mut tree, node, labels) = layout(&mut view, &renderer, size);
-    assert_eq!(
-        labels.text.iter().filter(|(text, _)| text == "▶").count(),
-        1
-    );
-    assert!(!labels.contains("Активировать"));
-    let icon = labels.bounds("▶");
-    let button = labels
-        .containers
-        .iter()
-        .find(|bounds| bounds.size() == Size::new(34.0, 34.0) && bounds.contains(icon.center()))
-        .expect("activation button");
-    assert!(icon.center_x() > button.center_x());
-    let layout = Layout::new(&node);
-    let widget = view.as_widget_mut();
-    let cursor = mouse::Cursor::Available(icon.center());
-    let mut messages = Vec::new();
-    for event in [
-        mouse::Event::CursorMoved {
-            position: icon.center(),
-        },
-        mouse::Event::ButtonPressed(mouse::Button::Left),
-        mouse::Event::ButtonReleased(mouse::Button::Left),
-    ] {
-        widget.update(
-            &mut tree,
-            &Event::Mouse(event),
-            layout,
-            cursor,
+    for (index, (generation, show_profile, detail_count)) in
+        [(Some(1), true, 2), (Some(0), false, 2), (None, false, 3)]
+            .into_iter()
+            .enumerate()
+    {
+        let messages = {
+            let mut view = state
+                .view(&app.i18n, Some(&snapshot), true, None, None)
+                .map(Message::BuildHistory);
+            let (mut tree, node, labels) = layout(&mut view, &renderer, size);
+            let icons: Vec<_> = labels
+                .text
+                .iter()
+                .filter(|(text, _)| text == "▶")
+                .map(|(_, bounds)| *bounds)
+                .collect();
+            assert_eq!(icons.len(), 3);
+            assert!(!labels.contains("Активировать"));
+            let icon = icons[index];
+            let button = labels
+                .containers
+                .iter()
+                .find(|bounds| {
+                    bounds.size() == Size::new(34.0, 34.0) && bounds.contains(icon.center())
+                })
+                .expect("activation button");
+            assert!(icon.center_x() > button.center_x());
+            let layout = Layout::new(&node);
+            let widget = view.as_widget_mut();
+            let cursor = mouse::Cursor::Available(icon.center());
+            let mut messages = Vec::new();
+            for event in [
+                mouse::Event::CursorMoved {
+                    position: icon.center(),
+                },
+                mouse::Event::ButtonPressed(mouse::Button::Left),
+                mouse::Event::ButtonReleased(mouse::Button::Left),
+            ] {
+                widget.update(
+                    &mut tree,
+                    &Event::Mouse(event),
+                    layout,
+                    cursor,
+                    &renderer,
+                    &mut clipboard::Null,
+                    &mut Shell::new(&mut messages),
+                    &viewport,
+                );
+                if matches!(event, mouse::Event::CursorMoved { .. }) {
+                    assert!(
+                        widget
+                            .overlay(&mut tree, layout, &renderer, &viewport, Vector::ZERO)
+                            .is_some()
+                    );
+                }
+            }
+            messages
+        };
+        let [
+            Message::BuildHistory(
+                message @ build_history::Message::Select {
+                    target: rebuild::ReadyTarget::Selected(path),
+                    generation: selected_generation,
+                },
+            ),
+        ] = messages.as_slice()
+        else {
+            panic!("expected an activation selection");
+        };
+        assert_eq!(path, std::path::Path::new(inactive_path));
+        assert_eq!(*selected_generation, generation);
+        let _ = state.update(message.clone(), Some(&snapshot), true, true);
+
+        let labels = layout(
+            &mut state
+                .view(&app.i18n, Some(&snapshot), true, None, None)
+                .map(Message::BuildHistory),
             &renderer,
-            &mut clipboard::Null,
-            &mut Shell::new(&mut messages),
-            &viewport,
-        );
-        if matches!(event, mouse::Event::CursorMoved { .. }) {
-            assert!(
-                widget
-                    .overlay(&mut tree, layout, &renderer, &viewport, Vector::ZERO)
-                    .is_some()
+            compact,
+        )
+        .2;
+        assert_eq!(labels.focusables.len(), detail_count);
+        assert!(labels.contains("загружена"));
+        let active_badge = app.i18n.text("history-active");
+        assert!(!labels.text.iter().any(|(label, _)| label == &active_badge));
+        assert_eq!(labels.contains("системный профиль"), show_profile);
+        let activate = labels.bounds("Активировать");
+        assert!(activate.y + activate.height <= compact.height);
+        let _ = state.update(build_history::Message::Back, Some(&snapshot), true, true);
+    }
+
+    let rollback = history::QuickRollback::for_test(inactive_path);
+    snapshot.quick_rollback = Some(rollback.clone());
+    let messages = {
+        let mut view = state
+            .view(&app.i18n, Some(&snapshot), true, None, None)
+            .map(Message::BuildHistory);
+        let (mut tree, node, labels) = layout(&mut view, &renderer, size);
+        let position = labels.bounds("Откатить").center();
+        let mut messages = Vec::new();
+        for event in [
+            mouse::Event::ButtonPressed(mouse::Button::Left),
+            mouse::Event::ButtonReleased(mouse::Button::Left),
+        ] {
+            view.as_widget_mut().update(
+                &mut tree,
+                &Event::Mouse(event),
+                Layout::new(&node),
+                mouse::Cursor::Available(position),
+                &renderer,
+                &mut clipboard::Null,
+                &mut Shell::new(&mut messages),
+                &viewport,
             );
         }
+        messages
+    };
+    for message in messages {
+        let Message::BuildHistory(message) = message else {
+            panic!("expected a build history message");
+        };
+        let _ = state.update(message, Some(&snapshot), true, true);
     }
+    let labels = layout(
+        &mut state
+            .view(&app.i18n, Some(&snapshot), true, None, None)
+            .map(Message::BuildHistory),
+        &renderer,
+        compact,
+    )
+    .2;
+    assert_eq!(labels.focusables.len(), 5); // Path, two generations, and two builds.
+    assert!(labels.contains("загружена"));
+    assert!(labels.contains("системный профиль"));
+    let activate = labels.bounds("Активировать");
+    assert!(activate.y + activate.height <= compact.height);
     assert!(matches!(
-        messages.as_slice(),
-        [Message::BuildHistory(build_history::Message::Select(rebuild::ReadyTarget::Selected(path)))]
-            if path == std::path::Path::new(inactive_path)
+        state.update(build_history::Message::Activate, Some(&snapshot), true, true),
+        build_history::Action::Activate(rebuild::ReadyTarget::Quick(target)) if target == rollback
     ));
 }
 
