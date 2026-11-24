@@ -825,8 +825,14 @@ async fn build_history_shows_system_configurations_without_a_repository() {
     let (viewport, _) = labels.scroll_viewport.expect("scrollable build history");
     let last_generation = labels.focusables.last().expect("selectable generation");
     assert!(last_generation.y > viewport.y + viewport.height);
-    let close = labels.bounds("Закрыть");
-    assert!(close.y >= viewport.y + viewport.height && close.y + close.height <= compact.height);
+    let title = labels.bounds("История сборок");
+    let close = labels.bounds("×");
+    assert!(close.x >= title.x + title.width);
+    assert!(close.y + close.height <= viewport.y);
+    let refresh = labels.bounds("Обновить");
+    assert!(
+        refresh.y >= viewport.y + viewport.height && refresh.y + refresh.height <= compact.height
+    );
     for status in ["активна", "загружена"] {
         assert!(labels.contains(status));
     }
@@ -923,6 +929,27 @@ async fn build_history_shows_system_configurations_without_a_repository() {
             stays_open
         );
     }
+    let position = labels.bounds("×").center();
+    for event in [
+        mouse::Event::CursorMoved { position },
+        mouse::Event::ButtonPressed(mouse::Button::Left),
+        mouse::Event::ButtonReleased(mouse::Button::Left),
+    ] {
+        widget.update(
+            &mut tree,
+            &Event::Mouse(event),
+            layout,
+            mouse::Cursor::Available(position),
+            &renderer,
+            &mut clipboard::Null,
+            &mut Shell::new(&mut messages),
+            &window,
+        );
+    }
+    assert!(matches!(
+        messages.as_slice(),
+        [Message::BuildHistory(build_history::Message::Close)]
+    ));
 }
 
 #[tokio::test]
@@ -950,7 +977,7 @@ async fn build_history_activation_icon_shows_a_tooltip_and_selects_the_target() 
     state.set_snapshot(&app.i18n, &snapshot);
 
     let renderer = headless().await;
-    let size = Size::new(560.0 / 1.5, 420.0 / 1.5);
+    let size = Size::new(560.0, 420.0);
     let viewport = Rectangle::with_size(size);
     let mut view = state
         .view(&app.i18n, Some(&snapshot), true, None, None)
@@ -1037,10 +1064,11 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
             labels.contains(&app.i18n.text("history-removal-boot-warning")),
             marked
         );
+        let close = labels.bounds("×").center();
         let mut controls: Vec<_> = labels
             .containers
             .into_iter()
-            .filter(|bounds| bounds.size() == Size::new(34.0, 34.0))
+            .filter(|bounds| bounds.size() == Size::new(34.0, 34.0) && !bounds.contains(close))
             .collect();
         controls.dedup();
         let [trash] = controls.as_slice() else {
@@ -1139,7 +1167,7 @@ async fn build_history_copies_paths_generations_and_build_details() {
 
     let mut app = boot_with_cache(Ok(None));
     let renderer = headless().await;
-    let size = Size::new(800.0, 540.0);
+    let size = Size::new(800.0, 600.0);
     let store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-nixos-system";
     let revision = "0123456789abcdef0123456789abcdef01234567";
     let build: history::Build = serde_json::from_value(serde_json::json!({

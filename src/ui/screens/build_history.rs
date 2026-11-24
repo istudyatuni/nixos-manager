@@ -1,6 +1,6 @@
 use fluent_bundle::FluentArgs;
 use iced::{
-    Center, Element, Fill, Font, Shrink, border, padding,
+    Center, Element, Fill, Font, border, padding,
     widget::{
         button, column, container, row, rule, scrollable, space, text,
         text_editor::{self, Content},
@@ -246,10 +246,6 @@ fn list<'a>(
         )
         .gap(spacing::SM)
         .style(containers::card),
-        button(text(i18n.text("history-close")))
-            .padding([7, 12])
-            .style(buttons::secondary)
-            .on_press_maybe((!state.removing).then_some(Message::Close)),
     ]
     .spacing(spacing::MD);
     let mut footer = column![].spacing(spacing::MD);
@@ -271,7 +267,19 @@ fn list<'a>(
         }
     }
     let footer = footer.push(actions);
-    let mut content = column![text(i18n.text("history-title")).size(22)].spacing(spacing::LG);
+    let header = row![
+        text(i18n.text("history-title")).size(22),
+        space().width(Fill),
+        icon_button::view(
+            text("×").size(20),
+            i18n.text("history-close"),
+            (!state.removing).then_some(Message::Close),
+            buttons::secondary,
+        ),
+    ]
+    .align_y(Center)
+    .spacing(spacing::LG);
+    let mut content = column![header].spacing(spacing::LG);
     let Some(snapshot) = snapshot else {
         return content
             .push(text(i18n.text("history-loading")))
@@ -313,7 +321,7 @@ fn list<'a>(
         ));
     }
     content
-        .push(scrollable(entries).height(Shrink))
+        .push(scrollable(entries).height(Fill))
         .push(footer)
         .into()
 }
