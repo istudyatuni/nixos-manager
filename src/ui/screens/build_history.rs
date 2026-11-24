@@ -11,11 +11,11 @@ use iced::{
 use crate::{
     i18n::I18n,
     rebuild::{
-        ReadyTarget,
-        history::{Build, Snapshot, Source, Target},
+        Error, ReadyTarget,
+        history::{Build, Removal, Snapshot, Source, Target},
     },
     ui::{
-        components::{icon_button, popup, selectable_text},
+        components::{icon::Icon, icon_button, popup, selectable_text},
         modal,
         style::{buttons, colors, containers, spacing},
     },
@@ -28,6 +28,8 @@ pub enum Message {
     Select(ReadyTarget),
     Back,
     Activate,
+    ToggleRemoval(Removal),
+    Remove,
     SelectText(TextTarget, text_editor::Action),
 }
 
@@ -44,28 +46,57 @@ pub enum Action {
     Close,
     Refresh,
     Activate(ReadyTarget),
+    Remove(Vec<Removal>),
 }
 
 #[derive(Default)]
 pub struct State {
     selection: Option<(ReadyTarget, Content)>,
     rows: Vec<TargetRow>,
+    marked: Vec<Removal>,
+    removing: bool,
+    removal_error: Option<Error>,
 }
 
 impl State {
-    pub fn update(&mut self, message: Message, can_activate: bool) -> Action {
+    pub fn update(
+        &mut self,
+        message: Message,
+        snapshot: Option<&Snapshot>,
+        can_activate: bool,
+        can_remove_generations: bool,
+    ) -> Action {
         match message {
-            Message::Close => return Action::Close,
-            Message::Refresh => return Action::Refresh,
-            Message::Select(selection) if can_activate => {
+            Message::Close if !self.removing => return Action::Close,
+            Message::Refresh if !self.removing && snapshot.is_some() => return Action::Refresh,
+            Message::Select(selection) if can_activate && !self.removing => {
                 let path = Content::with_text(&selection.path().to_string_lossy());
                 self.selection = Some((selection, path));
             }
             Message::Back => self.selection = None,
-            Message::Activate if can_activate => {
+            Message::Activate if can_activate && !self.removing => {
                 if let Some((selection, _)) = self.selection.take() {
                     return Action::Activate(selection);
                 }
+            }
+            Message::ToggleRemoval(removal)
+                if self.selection.is_none()
+                    && !self.removing
+                    && let Some(snapshot) = snapshot.filter(|snapshot| !snapshot.unavailable) =>
+            {
+                if let Some(index) = self.marked.iter().position(|marked| *marked == removal) {
+                    self.marked.remove(index);
+                } else if self.can_mark(snapshot, &removal) {
+                    self.marked.push(removal);
+                }
+            }
+            Message::Remove
+                if self.selection.is_none()
+                    && self.can_remove(snapshot, can_remove_generations) =>
+            {
+                self.removing = true;
+                self.removal_error = None;
+                return Action::Remove(self.marked.clone());
             }
             Message::SelectText(target, action) if !action.is_edit() => {
                 let content = match target {
@@ -89,18 +120,58 @@ impl State {
         Action::None
     }
 
-    pub fn set_targets(&mut self, i18n: &I18n, targets: &[Target]) {
+    fn can_mark(&self, snapshot: &Snapshot, removal: &Removal) -> bool {
+        self.rows
+            .iter()
+            .find(|row| row.removal.as_ref() == Some(removal))
+            .is_some_and(|row| snapshot.targets[row.target_index].can_mark(removal, &self.marked))
+    }
+
+    fn system_marked(&self) -> bool {
+        self.marked
+            .iter()
+            .any(|removal| removal.generation().is_some())
+    }
+
+    fn can_remove(&self, snapshot: Option<&Snapshot>, can_remove_generations: bool) -> bool {
+        !self.removing
+            && snapshot.is_some_and(|snapshot| !snapshot.unavailable)
+            && !self.marked.is_empty()
+            && (can_remove_generations || !self.system_marked())
+    }
+
+    pub fn removing(&self) -> bool {
+        self.removing
+    }
+
+    pub fn removal_finished(&mut self, result: Result<(), Error>) {
+        self.removing = false;
+        self.removal_error = result.err();
+        if result.is_ok() {
+            self.marked.clear();
+        }
+    }
+
+    pub fn set_snapshot(&mut self, i18n: &I18n, snapshot: &Snapshot) {
         self.rows.clear();
-        for (index, target) in targets.iter().enumerate() {
-            for &number in &target.generations {
+        for (index, target) in snapshot.targets.iter().enumerate() {
+            let system = &target.system;
+            for &number in &system.generations {
                 self.rows
                     .push(TargetRow::new(i18n, index, target, Some(number)));
             }
-            if target.generations.is_empty()
+            if system.generations.is_empty()
                 || !target.builds.is_empty()
-                || (target.profile_selected && target.selected_generation.is_none())
+                || (system.profile_selected && system.selected_generation.is_none())
             {
                 self.rows.push(TargetRow::new(i18n, index, target, None));
+            }
+        }
+        if !snapshot.unavailable {
+            for removal in std::mem::take(&mut self.marked) {
+                if self.can_mark(snapshot, &removal) {
+                    self.marked.push(removal);
+                }
             }
         }
     }
@@ -111,6 +182,7 @@ impl State {
         snapshot: Option<&'a Snapshot>,
         can_activate: bool,
         missing_tool: Option<&'static str>,
+        missing_removal_tool: Option<&'static str>,
     ) -> Element<'a, Message> {
         modal::dialog(
             move || match &self.selection {
@@ -120,9 +192,16 @@ impl State {
                     can_activate,
                     snapshot.is_some_and(|snapshot| snapshot.warns_about_switch(selection.path())),
                 ),
-                None => list(i18n, snapshot, &self.rows, can_activate, missing_tool),
+                None => list(
+                    i18n,
+                    snapshot,
+                    self,
+                    can_activate,
+                    missing_tool,
+                    missing_removal_tool,
+                ),
             },
-            Some(Message::Close),
+            (!self.removing).then_some(Message::Close),
         )
     }
 }
@@ -130,17 +209,36 @@ impl State {
 fn list<'a>(
     i18n: &'a I18n,
     snapshot: Option<&'a Snapshot>,
-    rows: &'a [TargetRow],
+    state: &'a State,
     can_activate: bool,
     missing_tool: Option<&str>,
+    missing_removal_tool: Option<&str>,
 ) -> Element<'a, Message> {
+    let activation_tool = missing_tool.filter(|_| {
+        snapshot.is_some_and(|snapshot| snapshot.targets.iter().any(|target| !target.system.active))
+    });
+    let delete_label = if state.removing {
+        "history-removing"
+    } else {
+        "history-remove-selected"
+    };
     let actions = row![
+        button(text(i18n.text(delete_label)))
+            .padding([7, 12])
+            .style(buttons::danger)
+            .on_press_maybe(
+                state
+                    .can_remove(snapshot, missing_removal_tool.is_none())
+                    .then_some(Message::Remove),
+            ),
         space().width(Fill),
         tooltip(
             button(text(i18n.text("history-refresh")))
                 .padding([7, 12])
                 .style(buttons::secondary)
-                .on_press_maybe(snapshot.is_some().then_some(Message::Refresh)),
+                .on_press_maybe(
+                    (snapshot.is_some() && !state.removing).then_some(Message::Refresh)
+                ),
             text(i18n.text("history-refresh-help"))
                 .size(13)
                 .wrapping(text::Wrapping::WordOrGlyph),
@@ -151,27 +249,40 @@ fn list<'a>(
         button(text(i18n.text("history-close")))
             .padding([7, 12])
             .style(buttons::secondary)
-            .on_press(Message::Close),
+            .on_press_maybe((!state.removing).then_some(Message::Close)),
     ]
     .spacing(spacing::MD);
+    let mut footer = column![].spacing(spacing::MD);
+    if let Some(error) = state.removal_error {
+        let key = match error {
+            Error::TargetUnavailable => "history-removal-changed",
+            Error::Cancelled => "history-removal-cancelled",
+            Error::AuthorizationFailed => "history-removal-auth-failed",
+            _ => "history-removal-failed",
+        };
+        footer = footer.push(notice(i18n.text(key)).color(colors::DANGER));
+    }
+    if state.system_marked() {
+        footer = footer.push(notice(i18n.text("history-removal-boot-warning")));
+        if let Some(program) = missing_removal_tool
+            && Some(program) != activation_tool
+        {
+            footer = footer.push(tool_notice(i18n, program));
+        }
+    }
+    let footer = footer.push(actions);
     let mut content = column![text(i18n.text("history-title")).size(22)].spacing(spacing::LG);
     let Some(snapshot) = snapshot else {
         return content
             .push(text(i18n.text("history-loading")))
-            .push(actions)
+            .push(footer)
             .into();
     };
     if snapshot.unavailable {
         content = content.push(notice(i18n.text("history-unavailable")));
     }
-    if let Some(program) = missing_tool
-        && snapshot.targets.iter().any(|target| !target.active)
-    {
-        let mut args = FluentArgs::new();
-        args.set("program", program);
-        content = content.push(notice(
-            i18n.with_args("overview-rebuild-tool-unavailable", &args),
-        ));
+    if let Some(program) = activation_tool {
+        content = content.push(tool_notice(i18n, program));
     }
     if let Some(rollback) = &snapshot.quick_rollback {
         content = content.push(
@@ -187,21 +298,23 @@ fn list<'a>(
         if !snapshot.unavailable {
             content = content.push(text(i18n.text("history-empty")));
         }
-        return content.push(actions).into();
+        return content.push(footer).into();
     }
     let mut entries = column![].spacing(spacing::LG).width(Fill);
-    for (index, entry) in rows.iter().enumerate() {
+    for (index, entry) in state.rows.iter().enumerate() {
         entries = entries.push(rule::horizontal(1)).push(target_row(
             i18n,
             &snapshot.targets[entry.target_index],
             entry,
             index,
             can_activate,
+            &state.marked,
+            !state.removing && !snapshot.unavailable,
         ));
     }
     content
         .push(scrollable(entries).height(Shrink))
-        .push(actions)
+        .push(footer)
         .into()
 }
 
@@ -211,6 +324,7 @@ struct TargetRow {
     generation: Option<Content>,
     profile_selected: bool,
     notes: Vec<Content>,
+    removal: Option<Removal>,
 }
 
 impl TargetRow {
@@ -228,8 +342,10 @@ impl TargetRow {
             target_index,
             path: Content::with_text(&target.store_path.to_string_lossy()),
             generation: number.map(|number| Content::with_text(&generation_label(i18n, number))),
-            profile_selected: target.profile_selected && number == target.selected_generation,
+            profile_selected: target.system.profile_selected
+                && number == target.system.selected_generation,
             notes,
+            removal: target.removal(number),
         }
     }
 }
@@ -246,6 +362,8 @@ fn target_row<'a>(
     labels: &'a TargetRow,
     index: usize,
     can_activate: bool,
+    marked: &[Removal],
+    can_toggle: bool,
 ) -> Element<'a, Message> {
     let mut details = column![selectable_text::view(
         &labels.path,
@@ -257,8 +375,8 @@ fn target_row<'a>(
     .spacing(spacing::SM)
     .width(Fill);
     let badges = [
-        (target.active, "history-active", colors::SUCCESS),
-        (target.booted, "history-booted", colors::INFO),
+        (target.system.active, "history-active", colors::SUCCESS),
+        (target.system.booted, "history-booted", colors::INFO),
     ];
     let statuses = row(badges
         .into_iter()
@@ -297,7 +415,22 @@ fn target_row<'a>(
     }
     row![
         details,
-        (!target.active).then(|| {
+        labels.removal.as_ref().map(|removal| {
+            let selected = marked.contains(removal);
+            let (label, style) = if selected {
+                ("history-unmark-removal", buttons::danger as _)
+            } else {
+                ("history-mark-removal", buttons::secondary as _)
+            };
+            icon_button::view(
+                Icon::Trash,
+                i18n.text(label),
+                (can_toggle && (selected || target.can_mark(removal, marked)))
+                    .then(|| Message::ToggleRemoval(removal.clone())),
+                style,
+            )
+        }),
+        (!target.system.active).then(|| {
             icon_button::view(
                 // Shift the triangle right to balance its wider left edge.
                 container(text("▶").size(14)).padding(padding::left(2)),
@@ -311,6 +444,12 @@ fn target_row<'a>(
     .spacing(spacing::MD)
     .align_y(Center)
     .into()
+}
+
+fn tool_notice(i18n: &I18n, program: &str) -> iced::widget::Text<'static> {
+    let mut args = FluentArgs::new();
+    args.set("program", program);
+    notice(i18n.with_args("overview-rebuild-tool-unavailable", &args))
 }
 
 fn profile_caption(i18n: &I18n) -> Element<'static, Message> {

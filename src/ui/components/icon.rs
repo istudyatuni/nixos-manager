@@ -4,18 +4,16 @@ use iced::{
     border,
 };
 
-use super::Message;
-
 const SIZE: f32 = 16.0;
 const STROKE: f32 = 1.25;
 
-pub(super) enum Icon {
+pub enum Icon {
     Copy,
     Trash,
     Stop,
 }
 
-impl Widget<Message, Theme, Renderer> for Icon {
+impl<Message> Widget<Message, Theme, Renderer> for Icon {
     fn size(&self) -> Size<Length> {
         Size::new(SIZE.into(), SIZE.into())
     }
@@ -79,7 +77,7 @@ impl Widget<Message, Theme, Renderer> for Icon {
     }
 }
 
-impl<'a> From<Icon> for Element<'a, Message> {
+impl<'a, Message: 'a> From<Icon> for Element<'a, Message> {
     fn from(icon: Icon) -> Self {
         Self::new(icon)
     }

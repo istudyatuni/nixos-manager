@@ -90,6 +90,17 @@ impl Tools {
         .into_iter()
         .filter_map(|(missing, program)| missing.then_some(program))
     }
+
+    pub fn missing_for_generation_removal(self) -> Option<&'static str> {
+        self.missing(
+            false,
+            Steps {
+                boot: true,
+                activate: false,
+            },
+        )
+        .next()
+    }
 }
 
 fn executable(path: &Path) -> bool {
@@ -239,7 +250,7 @@ pub async fn run<F: Future<Output = ()> + Send>(
                 || !snapshot
                     .targets
                     .iter()
-                    .any(|entry| entry.store_path == path && !entry.active)
+                    .any(|entry| entry.store_path == path && !entry.system.active)
             {
                 return Err(Error::TargetUnavailable);
             }

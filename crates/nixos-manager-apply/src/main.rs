@@ -1,4 +1,4 @@
-//! Privileged helper for applying a built NixOS configuration.
+//! Privileged helper for applying NixOS configurations and deleting generations.
 //!
 //! The GUI starts this binary once through `pkexec`. Any required build runs
 //! separately as the current user. The helper reports readiness on stdout and
@@ -24,14 +24,20 @@ use std::{
 };
 
 use nixos_manager_apply_protocol::{
-    APPLY, Mode, NIX_ENV, READY, REGISTERED, SYSTEM_PROFILE, system_script,
+    APPLY, DELETE_GENERATIONS, Mode, NIX_ENV, READY, REGISTERED, SELECTION_CHANGED, SYSTEM_PROFILE,
+    delete_generation_args,
+    system::{Generation, State},
+    system_script,
 };
 use signal_hook::{consts::SIGINT, flag};
 
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
-    let mode = args
-        .next()
+    let argument = args.next();
+    if argument.as_deref() == Some(OsStr::new(DELETE_GENERATIONS)) {
+        return result_code(delete_generations(args));
+    }
+    let mode = argument
         .as_deref()
         .and_then(OsStr::to_str)
         .and_then(|mode| mode.parse().ok());
@@ -41,13 +47,46 @@ fn main() -> ExitCode {
 
     // Let the registration command receive Ctrl+C directly, then reap it before exiting.
     let interrupted = Arc::new(AtomicBool::new(false));
-    match flag::register(SIGINT, Arc::clone(&interrupted)).and_then(|_| apply(mode, &interrupted)) {
+    result_code(
+        flag::register(SIGINT, Arc::clone(&interrupted)).and_then(|_| apply(mode, &interrupted)),
+    )
+}
+
+fn result_code(result: io::Result<u8>) -> ExitCode {
+    match result {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
             eprintln!("nixos-manager-apply: {error}");
             ExitCode::FAILURE
         }
     }
+}
+
+fn delete_generations(mut args: impl Iterator<Item = std::ffi::OsString>) -> io::Result<u8> {
+    let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "invalid generation selection");
+    let mut generations = Vec::new();
+    while let Some(number) = args.next() {
+        let number = number
+            .to_str()
+            .and_then(|number| number.parse().ok())
+            .ok_or_else(invalid)?;
+        let path = args.next().ok_or_else(invalid)?.into();
+        generations.push(Generation { number, path });
+    }
+    if generations.is_empty() {
+        return Err(invalid());
+    }
+    let expected = generations.iter().collect::<Vec<_>>();
+    if !State::read().can_remove_generations(&expected) {
+        return Ok(SELECTION_CHANGED);
+    }
+    let status = Command::new(NIX_ENV)
+        .args(delete_generation_args(
+            generations.iter().map(|entry| entry.number),
+        ))
+        .stdin(Stdio::null())
+        .status()?;
+    Ok(u8::from(!status.success()))
 }
 
 fn apply(mode: Mode, interrupted: &AtomicBool) -> io::Result<u8> {

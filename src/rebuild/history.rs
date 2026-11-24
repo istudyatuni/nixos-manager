@@ -9,7 +9,11 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use nixos_manager_apply_protocol::{Mode, SYSTEM_PROFILE, system_script};
+use nixos_manager_apply_protocol::{
+    Mode,
+    system::{State as SystemState, Target as SystemTarget},
+    system_script,
+};
 use rustix::fs::{FlockOperation, flock};
 use serde::{Deserialize, Serialize};
 
@@ -18,8 +22,9 @@ use crate::config::{prepare_json, read_json};
 const VERSION: u32 = 1;
 const HISTORY_FILE: &str = "history.json";
 const AUTO_ROOTS: &str = "/nix/var/nix/gcroots/auto";
-const CURRENT_SYSTEM: &str = "/run/current-system";
-const BOOTED_SYSTEM: &str = "/run/booted-system";
+mod removal;
+pub(super) use nixos_manager_apply_protocol::system::{current_system, resolve_system};
+pub use removal::{Removal, remove};
 
 #[derive(Serialize, Deserialize)]
 struct History {
@@ -153,11 +158,7 @@ impl Snapshot {
 pub struct Target {
     pub store_path: PathBuf,
     pub builds: Vec<Build>,
-    pub generations: Vec<u64>,
-    pub profile_selected: bool,
-    pub selected_generation: Option<u64>,
-    pub active: bool,
-    pub booted: bool,
+    pub system: SystemTarget,
 }
 
 impl Target {
@@ -165,11 +166,7 @@ impl Target {
         Self {
             store_path: store_path.to_owned(),
             builds: Vec::new(),
-            generations: Vec::new(),
-            profile_selected: false,
-            selected_generation: None,
-            active: false,
-            booted: false,
+            system: SystemTarget::default(),
         }
     }
 }
@@ -416,14 +413,20 @@ impl History {
     }
 
     fn snapshot(&self) -> Snapshot {
-        let mut targets = BTreeMap::new();
-        let current = discover_system(
-            Path::new(SYSTEM_PROFILE),
-            Path::new(CURRENT_SYSTEM),
-            Path::new(BOOTED_SYSTEM),
-            &mut targets,
-            resolve_system,
-        );
+        let SystemState {
+            targets, current, ..
+        } = SystemState::read();
+        let mut targets: BTreeMap<_, _> = targets
+            .into_iter()
+            .map(|(store_path, system)| {
+                let target = Target {
+                    store_path: store_path.clone(),
+                    builds: Vec::new(),
+                    system,
+                };
+                (store_path, target)
+            })
+            .collect();
         for build in self.builds.iter().rev() {
             if targets.contains_key(&build.store_path) || system_script(&build.store_path).is_ok() {
                 add_target(&mut targets, &build.store_path)
@@ -441,7 +444,7 @@ impl History {
                 operation.mode == ApplyMode::Switch
                     && targets
                         .get(&operation.target)
-                        .is_some_and(|target| target.profile_selected)
+                        .is_some_and(|target| target.system.profile_selected)
             })
             .or_else(|| {
                 self.last_activation().filter(|operation| {
@@ -453,16 +456,16 @@ impl History {
         let mut targets: Vec<_> = targets.into_values().collect();
         targets.sort_by(|a, b| {
             (
-                b.active,
-                b.booted,
+                b.system.active,
+                b.system.booted,
                 b.builds.first().and_then(|build| build.built_at),
-                b.generations.first(),
+                b.system.generations.first(),
             )
                 .cmp(&(
-                    a.active,
-                    a.booted,
+                    a.system.active,
+                    a.system.booted,
                     a.builds.first().and_then(|build| build.built_at),
-                    a.generations.first(),
+                    a.system.generations.first(),
                 ))
         });
         Snapshot {
@@ -512,73 +515,10 @@ pub fn snapshot() -> Snapshot {
     }
 }
 
-pub(super) fn current_system() -> Option<PathBuf> {
-    resolve_system(Path::new(CURRENT_SYSTEM))
-}
-
-pub(super) fn resolve_system(path: &Path) -> Option<PathBuf> {
-    let system = fs::canonicalize(path).ok()?;
-    system_script(&system).ok()?;
-    Some(system)
-}
-
-fn discover_system(
-    profile: &Path,
-    current: &Path,
-    booted: &Path,
-    targets: &mut BTreeMap<PathBuf, Target>,
-    resolve: impl Fn(&Path) -> Option<PathBuf>,
-) -> Option<PathBuf> {
-    if let Some(directory) = profile.parent()
-        && let Ok(entries) = fs::read_dir(directory)
-    {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if let Some(number) = generation_number(&path)
-                && entry.file_type().is_ok_and(|kind| kind.is_symlink())
-                && let Some(system) = resolve(&path)
-            {
-                add_target(targets, &system).generations.push(number);
-            }
-        }
-        for target in targets.values_mut() {
-            target.generations.sort_unstable_by(|a, b| b.cmp(a));
-        }
-    }
-    if let Some(system) = resolve(profile) {
-        let target = add_target(targets, &system);
-        target.profile_selected = true;
-        target.selected_generation = fs::read_link(profile)
-            .ok()
-            .and_then(|link| generation_number(&link))
-            .filter(|number| target.generations.contains(number));
-    }
-    let current = resolve(current);
-    if let Some(system) = &current {
-        add_target(targets, system).active = true;
-    }
-    if let Some(system) = resolve(booted) {
-        add_target(targets, &system).booted = true;
-    }
-    current
-}
-
 fn add_target<'a>(targets: &'a mut BTreeMap<PathBuf, Target>, system: &Path) -> &'a mut Target {
     targets
         .entry(system.to_owned())
         .or_insert_with(|| Target::new(system))
-}
-
-fn generation_number(path: &Path) -> Option<u64> {
-    let number = path
-        .file_name()?
-        .to_str()?
-        .strip_prefix("system-")?
-        .strip_suffix("-link")?;
-    let canonical = !number.is_empty()
-        && number.bytes().all(|byte| byte.is_ascii_digit())
-        && (number == "0" || !number.starts_with('0'));
-    canonical.then_some(number)?.parse().ok()
 }
 
 fn state_directory() -> io::Result<PathBuf> {

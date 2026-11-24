@@ -6,14 +6,57 @@ use std::{
 };
 
 use nixos_manager_apply_protocol::{
-    APPLY, Mode, NIX_ENV, READY, REGISTERED, STORE, SWITCH, SYSTEM_PROFILE,
+    APPLY, DELETE_GENERATIONS, Mode, NIX_ENV, READY, REGISTERED, SELECTION_CHANGED, STORE, SWITCH,
+    SYSTEM_PROFILE, delete_generation_args, system::Generation,
 };
 use tokio::{process::Command, sync::mpsc};
 
 use super::{Error, Event, PKEXEC, Step, check_status, executable};
-use crate::command_runner::{CommandRunner, RunningCommand};
+use crate::command_runner::{CommandRunner, OutputError, RunningCommand};
 
 pub(super) const HELPER_NAME: &str = "nixos-manager-apply";
+
+fn helper_command(argument: &str) -> Result<Command, Error> {
+    let mut command = Command::new(PKEXEC);
+    command
+        // pkexec validates an inherited SHELL against /etc/shells.
+        .env_remove("SHELL")
+        .arg("--disable-internal-agent")
+        .arg(helper_path().ok_or(Error::LaunchFailed)?)
+        .arg(argument);
+    Ok(command)
+}
+
+pub(super) async fn delete_generations(
+    runner: &CommandRunner,
+    generations: &[&Generation],
+) -> Result<(), Error> {
+    let mut helper = helper_command(DELETE_GENERATIONS)?;
+    for generation in generations {
+        helper
+            .arg(generation.number.to_string())
+            .arg(&generation.path);
+    }
+    let mut command = Command::new(NIX_ENV);
+    command.args(delete_generation_args(
+        generations.iter().map(|entry| entry.number),
+    ));
+    runner.log_command(&command).await;
+    let status = runner
+        .output_with_error_kind(&mut helper)
+        .await
+        .map_err(|error| match error {
+            OutputError::Launch(_) => Error::LaunchFailed,
+            OutputError::Wait(_) => Error::WaitFailed,
+        })?
+        .status;
+    match status.code() {
+        Some(126) => Err(Error::Cancelled),
+        Some(127) => Err(Error::AuthorizationFailed),
+        Some(code) if code == i32::from(SELECTION_CHANGED) => Err(Error::TargetUnavailable),
+        _ => check_status(status),
+    }
+}
 
 pub(super) async fn authorize<F: Future<Output = ()> + Send>(
     runner: &CommandRunner,
@@ -22,15 +65,8 @@ pub(super) async fn authorize<F: Future<Output = ()> + Send>(
     emit: &mut (impl FnMut(Event) -> F + Send),
 ) -> Result<RunningCommand, Error> {
     emit(Event::Started(Step::Authorize)).await;
-    let path = helper_path().ok_or(Error::LaunchFailed)?;
-    let mut command = Command::new(PKEXEC);
-    command
-        // pkexec validates an inherited SHELL against /etc/shells.
-        .env_remove("SHELL")
-        .stdin(Stdio::piped())
-        .arg("--disable-internal-agent")
-        .arg(path)
-        .arg(mode.argument());
+    let mut command = helper_command(mode.argument())?;
+    command.stdin(Stdio::piped());
     let mut helper = runner.start_interruptible(command, interrupt).await?;
     let ready = runner
         .wait_for_marker(&mut helper, READY, interrupt, || {

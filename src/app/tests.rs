@@ -6,6 +6,7 @@ use iced::{
         widget::{Id, Operation, Tree, operation::Scrollable},
     },
 };
+use nixos_manager_apply_protocol::system::Target as SystemTarget;
 
 use super::*;
 
@@ -807,11 +808,13 @@ async fn build_history_shows_system_configurations_without_a_repository() {
         .extend((42..57).map(|number| history::Target {
             store_path: format!("/nix/store/example-{number}").into(),
             builds: Vec::new(),
-            generations: vec![number],
-            profile_selected: number == 42,
-            selected_generation: (number == 42).then_some(number),
-            active: number == 42,
-            booted: number == 42,
+            system: SystemTarget {
+                generations: vec![number],
+                profile_selected: number == 42,
+                selected_generation: (number == 42).then_some(number),
+                active: number == 42,
+                booted: number == 42,
+            },
         }));
     let _ = app.update(Message::HistoryLoaded(app.history_generation, snapshot));
 
@@ -936,20 +939,21 @@ async fn build_history_activation_icon_shows_a_tooltip_and_selects_the_target() 
         snapshot.targets.push(history::Target {
             store_path: path.into(),
             builds: Vec::new(),
-            generations: vec![generation],
-            profile_selected: false,
-            selected_generation: None,
-            active,
-            booted: active,
+            system: SystemTarget {
+                generations: vec![generation],
+                active,
+                booted: active,
+                ..SystemTarget::default()
+            },
         });
     }
-    state.set_targets(&app.i18n, &snapshot.targets);
+    state.set_snapshot(&app.i18n, &snapshot);
 
     let renderer = headless().await;
     let size = Size::new(560.0 / 1.5, 420.0 / 1.5);
     let viewport = Rectangle::with_size(size);
     let mut view = state
-        .view(&app.i18n, Some(&snapshot), true, None)
+        .view(&app.i18n, Some(&snapshot), true, None, None)
         .map(Message::BuildHistory);
     let (mut tree, node, labels) = layout(&mut view, &renderer, size);
     assert_eq!(
@@ -1001,6 +1005,123 @@ async fn build_history_activation_icon_shows_a_tooltip_and_selects_the_target() 
 }
 
 #[tokio::test]
+async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
+    let mut app = boot_with_cache(Ok(None));
+    app.set_language(LanguagePreference::Russian);
+    let mut snapshot = history::Snapshot::default();
+    snapshot.targets.push(history::Target {
+        store_path: "/nix/store/active-system".into(),
+        builds: Vec::new(),
+        system: SystemTarget {
+            generations: vec![42, 40],
+            profile_selected: true,
+            selected_generation: Some(42),
+            active: true,
+            booted: true,
+        },
+    });
+    let mut state = build_history::State::default();
+    state.set_snapshot(&app.i18n, &snapshot);
+    let renderer = headless().await;
+    let size = Size::new(560.0, 420.0);
+    let viewport = Rectangle::with_size(size);
+    let interact = |state: &build_history::State, click_trash, marked| {
+        let mut view = state
+            .view(&app.i18n, Some(&snapshot), false, None, None)
+            .map(Message::BuildHistory);
+        let (mut tree, node, labels) = layout(&mut view, &renderer, size);
+        let remove = labels.bounds("Удалить выбранные");
+        assert!(remove.x < labels.bounds("Обновить").x);
+        assert!(remove.y + remove.height <= size.height);
+        assert_eq!(
+            labels.contains(&app.i18n.text("history-removal-boot-warning")),
+            marked
+        );
+        let mut controls: Vec<_> = labels
+            .containers
+            .into_iter()
+            .filter(|bounds| bounds.size() == Size::new(34.0, 34.0))
+            .collect();
+        controls.dedup();
+        let [trash] = controls.as_slice() else {
+            panic!("expected one trash button, found {controls:?}")
+        };
+        let position = if click_trash {
+            trash.center()
+        } else {
+            remove.center()
+        };
+        let layout = Layout::new(&node);
+        let widget = view.as_widget_mut();
+        let mut messages = Vec::new();
+        for event in [
+            mouse::Event::CursorMoved { position },
+            mouse::Event::ButtonPressed(mouse::Button::Left),
+            mouse::Event::ButtonReleased(mouse::Button::Left),
+        ] {
+            widget.update(
+                &mut tree,
+                &Event::Mouse(event),
+                layout,
+                mouse::Cursor::Available(position),
+                &renderer,
+                &mut clipboard::Null,
+                &mut Shell::new(&mut messages),
+                &viewport,
+            );
+            if click_trash && matches!(event, mouse::Event::CursorMoved { .. }) {
+                assert!(
+                    widget
+                        .overlay(&mut tree, layout, &renderer, &viewport, Vector::ZERO)
+                        .is_some()
+                );
+            }
+        }
+        messages
+    };
+    assert!(interact(&state, false, false).is_empty());
+    for marked in [false, true, false] {
+        let messages = interact(&state, true, marked);
+        let [Message::BuildHistory(message @ build_history::Message::ToggleRemoval(removal))] =
+            messages.as_slice()
+        else {
+            panic!("expected a removal toggle");
+        };
+        assert_eq!(removal.generation().unwrap().number, 40);
+        let _ = state.update(message.clone(), Some(&snapshot), false, true);
+    }
+    assert!(matches!(
+        interact(&state, false, true).as_slice(),
+        [Message::BuildHistory(build_history::Message::Remove)]
+    ));
+    assert!(matches!(
+        state.update(build_history::Message::Remove, Some(&snapshot), false, true),
+        build_history::Action::Remove(marked) if marked.len() == 1 && marked[0].generation().unwrap().number == 40
+    ));
+    assert!(matches!(
+        state.update(
+            build_history::Message::Refresh,
+            Some(&snapshot),
+            false,
+            true
+        ),
+        build_history::Action::None
+    ));
+    state.removal_finished(Err(rebuild::Error::Cancelled));
+    state.set_snapshot(&app.i18n, &snapshot);
+    assert!(matches!(
+        interact(&state, false, true).as_slice(),
+        [Message::BuildHistory(build_history::Message::Remove)]
+    ));
+    snapshot.targets[0].system.generations = vec![42];
+    state.set_snapshot(&app.i18n, &snapshot);
+    assert!(matches!(
+        state.update(build_history::Message::Remove, Some(&snapshot), false, true),
+        build_history::Action::None
+    ));
+}
+
+#[tokio::test]
 async fn build_history_copies_paths_generations_and_build_details() {
     #[derive(Default)]
     struct Clipboard(Option<String>);
@@ -1040,11 +1161,13 @@ async fn build_history_copies_paths_generations_and_build_details() {
     snapshot.targets.push(history::Target {
         store_path: store_path.into(),
         builds: vec![build],
-        generations: vec![42, 41],
-        selected_generation: Some(42),
-        profile_selected: true,
-        active: true,
-        booted: true,
+        system: SystemTarget {
+            generations: vec![42, 41],
+            selected_generation: Some(42),
+            profile_selected: true,
+            active: true,
+            booted: true,
+        },
     });
     let _ = app.update(Message::HistoryLoaded(app.history_generation, snapshot));
 

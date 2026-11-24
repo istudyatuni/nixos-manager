@@ -10,15 +10,13 @@ use crate::{
     i18n::I18n,
     rebuild::{Error, Run, Step},
     ui::{
-        components::icon_button,
+        components::{icon::Icon, icon_button},
         style::{buttons, colors, containers, spacing},
     },
 };
 
-mod icon;
 mod output;
 
-use icon::Icon;
 pub(super) use output::Output;
 
 pub fn view<'a>(i18n: &I18n, run: Option<&Run>, state: &'a State) -> Element<'a, Message> {

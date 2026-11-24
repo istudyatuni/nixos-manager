@@ -238,17 +238,17 @@ fn discovers_profile_generations_and_independent_live_statuses() -> io::Result<(
     symlink(&active, directory.join("current-system"))?;
     symlink(&saved, directory.join("booted-system"))?;
 
-    let discover = |targets: &mut BTreeMap<PathBuf, Target>| {
-        discover_system(
+    let discover = || {
+        SystemState::discover(
             &directory.join("system"),
             &directory.join("current-system"),
             &directory.join("booted-system"),
-            targets,
             |path| fs::canonicalize(path).ok(),
         )
     };
-    let mut targets = BTreeMap::new();
-    assert_eq!(discover(&mut targets), Some(active.clone()));
+    let system = discover();
+    let targets = system.targets;
+    assert_eq!(system.current, Some(active.clone()));
     assert_eq!(targets.len(), 2);
     assert!(targets[&active].active);
     assert!(!targets[&active].booted);
@@ -260,9 +260,64 @@ fn discovers_profile_generations_and_independent_live_statuses() -> io::Result<(
 
     fs::remove_file(directory.join("booted-system"))?;
     symlink(&active, directory.join("booted-system"))?;
-    targets.clear();
-    discover(&mut targets);
+    let targets = discover().targets;
     assert!(targets[&active].active && targets[&active].booted);
+    Ok(())
+}
+
+#[test]
+fn system_deletion_protects_the_profile_and_keeps_a_running_generation() -> io::Result<()> {
+    use nixos_manager_apply_protocol::system::Generation;
+
+    let temp = tempfile::tempdir()?;
+    let directory = temp.path();
+    let a = directory.join("output-a");
+    let b = directory.join("output-b");
+    fs::create_dir(&a)?;
+    fs::create_dir(&b)?;
+    for (number, build) in [(40, &a), (41, &b), (42, &a)] {
+        symlink(build, directory.join(format!("system-{number}-link")))?;
+    }
+    let profile = directory.join("system");
+    let current = directory.join("current-system");
+    let booted = directory.join("booted-system");
+    symlink("system-42-link", &profile)?;
+    symlink(&a, &current)?;
+    symlink(&a, &booted)?;
+    let discover = || {
+        SystemState::discover(&profile, &current, &booted, |path| {
+            fs::canonicalize(path).ok()
+        })
+    };
+    let old = Generation {
+        number: 40,
+        path: a.clone(),
+    };
+    let new = Generation {
+        number: 42,
+        path: a.clone(),
+    };
+    let wrong_path = Generation {
+        number: 40,
+        path: b,
+    };
+    let system = discover();
+    assert!(system.can_remove_generations(&[&old]));
+    assert!(!system.can_remove_generations(&[&new]));
+    assert!(!system.can_remove_generations(&[&wrong_path]));
+
+    fs::remove_file(&profile)?;
+    symlink("system-41-link", &profile)?;
+    let system = discover();
+    assert!(system.can_remove_generations(&[&old]));
+    assert!(system.can_remove_generations(&[&new]));
+    assert!(!system.can_remove_generations(&[&old, &new]));
+
+    fs::remove_file(&profile)?;
+    symlink(&a, &profile)?;
+    let system = discover();
+    assert!(!system.can_remove_generations(&[&old]));
+    assert!(!system.can_remove_generations(&[&new]));
     Ok(())
 }
 

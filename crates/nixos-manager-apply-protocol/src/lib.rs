@@ -7,6 +7,8 @@ use std::{
     str::FromStr,
 };
 
+pub mod system;
+
 pub const NIX_ENV: &str = "/run/current-system/sw/bin/nix-env";
 pub const SYSTEM_PROFILE: &str = "/nix/var/nix/profiles/system";
 pub const STORE: &str = "/nix/store";
@@ -15,6 +17,17 @@ pub const SWITCH: &str = "bin/switch-to-configuration";
 pub const READY: &[u8] = b"nixos-manager:ready";
 pub const REGISTERED: &[u8] = b"nixos-manager:registered";
 pub const APPLY: &[u8] = b"apply";
+pub const DELETE_GENERATIONS: &str = "delete-generations";
+pub const SELECTION_CHANGED: u8 = 3;
+
+pub fn delete_generation_args(
+    numbers: impl IntoIterator<Item = u64>,
+) -> impl Iterator<Item = String> {
+    ["--profile", SYSTEM_PROFILE, "--delete-generations"]
+        .into_iter()
+        .map(str::to_owned)
+        .chain(numbers.into_iter().map(|number| number.to_string()))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {

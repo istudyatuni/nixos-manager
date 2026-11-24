@@ -64,6 +64,7 @@ pub enum Message {
     OpenCacheSettings,
     BuildHistory(build_history::Message),
     HistoryLoaded(u64, history::Snapshot),
+    HistoryRemoved(Result<(), rebuild::Error>),
     Overview(overview::Message),
     CacheSettings(cache_settings::Message),
     Settings(settings::Message),
@@ -269,10 +270,17 @@ impl App {
                     self.built = None;
                 }
                 if let Screen::BuildHistory(state) = &mut self.screen {
-                    state.set_targets(&self.i18n, &snapshot.targets);
+                    state.set_snapshot(&self.i18n, &snapshot);
                 }
                 self.history = Some(snapshot);
                 self.history_refreshing = false;
+            }
+            Message::HistoryRemoved(result) => {
+                if let Screen::BuildHistory(state) = &mut self.screen {
+                    state.removal_finished(result);
+                    let refresh = self.refresh_history();
+                    return Task::batch([refresh, self.finish_pending_close()]);
+                }
             }
             Message::OpenCacheSettings
                 if !self.loading && matches!(self.screen, Screen::Overview) =>
@@ -570,7 +578,7 @@ impl App {
                 .set_rebuild_error(&self.i18n, self.rebuild.as_ref());
             if let (Screen::BuildHistory(state), Some(snapshot)) = (&mut self.screen, &self.history)
             {
-                state.set_targets(&self.i18n, &snapshot.targets);
+                state.set_snapshot(&self.i18n, snapshot);
             }
         }
     }
@@ -583,7 +591,9 @@ impl App {
     }
 
     fn is_busy(&self) -> bool {
-        self.download.is_running() || self.rebuild.as_ref().is_some_and(rebuild::Run::is_running)
+        self.download.is_running()
+            || self.rebuild.as_ref().is_some_and(rebuild::Run::is_running)
+            || matches!(&self.screen, Screen::BuildHistory(state) if state.removing())
     }
 
     fn set_cache(
@@ -604,6 +614,9 @@ impl App {
             return Task::none();
         };
         if matches!(&self.screen, Screen::CacheSettings(state) if state.busy()) {
+            return Task::none();
+        }
+        if matches!(&self.screen, Screen::BuildHistory(state) if state.removing()) {
             return Task::none();
         }
         if self.rebuild.as_ref().is_some_and(rebuild::Run::is_running) {
@@ -707,10 +720,19 @@ impl App {
 
     fn update_history(&mut self, message: build_history::Message) -> Task<Message> {
         let can_activate = self.can_activate_history();
+        let can_remove_generations = self
+            .rebuild_tools
+            .missing_for_generation_removal()
+            .is_none();
         let Screen::BuildHistory(state) = &mut self.screen else {
             return Task::none();
         };
-        match state.update(message, can_activate) {
+        match state.update(
+            message,
+            self.history.as_ref(),
+            can_activate,
+            can_remove_generations,
+        ) {
             build_history::Action::None => Task::none(),
             build_history::Action::Close => {
                 self.screen = Screen::Overview;
@@ -724,6 +746,10 @@ impl App {
                     rebuild::Steps::ACTIVATE,
                     true,
                 )
+            }
+            build_history::Action::Remove(marked) => {
+                let runner = self.commands.clone();
+                Task::perform(history::remove(runner, marked), Message::HistoryRemoved)
             }
         }
     }
@@ -957,6 +983,7 @@ impl App {
                         self.rebuild_tools
                             .missing(false, rebuild::Steps::ACTIVATE)
                             .next(),
+                        self.rebuild_tools.missing_for_generation_removal(),
                     )
                     .map(Message::BuildHistory),
             ),
