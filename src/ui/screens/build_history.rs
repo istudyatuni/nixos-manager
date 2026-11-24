@@ -1,6 +1,6 @@
 use fluent_bundle::FluentArgs;
 use iced::{
-    Center, Element, Fill, Font, border, padding,
+    Center, Element, Fill, Font, Shrink, border, padding,
     widget::{
         button, column, container, row, rule, scrollable, space, text,
         text_editor::{self, Content},
@@ -248,7 +248,7 @@ fn list<'a>(
         .style(containers::card),
     ]
     .spacing(spacing::MD);
-    let mut footer = column![].spacing(spacing::MD);
+    let mut deletion_notices = column![].spacing(spacing::MD);
     if let Some(error) = state.removal_error {
         let key = match error {
             Error::TargetUnavailable => "history-removal-changed",
@@ -256,17 +256,16 @@ fn list<'a>(
             Error::AuthorizationFailed => "history-removal-auth-failed",
             _ => "history-removal-failed",
         };
-        footer = footer.push(notice(i18n.text(key)).color(colors::DANGER));
+        deletion_notices = deletion_notices.push(notice(i18n.text(key)).color(colors::DANGER));
     }
     if state.system_marked() {
-        footer = footer.push(notice(i18n.text("history-removal-boot-warning")));
+        deletion_notices = deletion_notices.push(notice(i18n.text("history-removal-boot-warning")));
         if let Some(program) = missing_removal_tool
             && Some(program) != activation_tool
         {
-            footer = footer.push(tool_notice(i18n, program));
+            deletion_notices = deletion_notices.push(tool_notice(i18n, program));
         }
     }
-    let footer = footer.push(actions);
     let header = row![
         text(i18n.text("history-title")).size(22),
         space().width(Fill),
@@ -279,51 +278,46 @@ fn list<'a>(
     ]
     .align_y(Center)
     .spacing(spacing::LG);
-    let mut content = column![header].spacing(spacing::LG);
-    let Some(snapshot) = snapshot else {
-        return content
-            .push(text(i18n.text("history-loading")))
-            .push(footer)
-            .into();
-    };
-    if snapshot.unavailable {
-        content = content.push(notice(i18n.text("history-unavailable")));
-    }
-    if let Some(program) = activation_tool {
-        content = content.push(tool_notice(i18n, program));
-    }
-    if let Some(rollback) = &snapshot.quick_rollback {
-        content = content.push(
-            button(text(i18n.text("history-quick-rollback")))
-                .padding([7, 12])
-                .style(buttons::primary)
-                .on_press_maybe(
-                    can_activate.then(|| Message::Select(ReadyTarget::Quick(rollback.clone()))),
-                ),
-        );
-    }
-    if snapshot.targets.is_empty() {
-        if !snapshot.unavailable {
-            content = content.push(text(i18n.text("history-empty")));
-        }
-        return content.push(footer).into();
-    }
     let mut entries = column![].spacing(spacing::LG).width(Fill);
-    for (index, entry) in state.rows.iter().enumerate() {
-        entries = entries.push(rule::horizontal(1)).push(target_row(
-            i18n,
-            &snapshot.targets[entry.target_index],
-            entry,
-            index,
-            can_activate,
-            &state.marked,
-            !state.removing && !snapshot.unavailable,
-        ));
+    if let Some(snapshot) = snapshot {
+        if snapshot.unavailable {
+            entries = entries.push(notice(i18n.text("history-unavailable")));
+        }
+        if let Some(program) = activation_tool {
+            entries = entries.push(tool_notice(i18n, program));
+        }
+        if let Some(rollback) = &snapshot.quick_rollback {
+            entries = entries.push(
+                button(text(i18n.text("history-quick-rollback")))
+                    .padding([7, 12])
+                    .style(buttons::primary)
+                    .on_press_maybe(
+                        can_activate.then(|| Message::Select(ReadyTarget::Quick(rollback.clone()))),
+                    ),
+            );
+        }
+        if snapshot.targets.is_empty() && !snapshot.unavailable {
+            entries = entries.push(text(i18n.text("history-empty")));
+        }
+        for (index, entry) in state.rows.iter().enumerate() {
+            entries = entries.push(rule::horizontal(1)).push(target_row(
+                i18n,
+                &snapshot.targets[entry.target_index],
+                entry,
+                index,
+                can_activate,
+                &state.marked,
+                !state.removing && !snapshot.unavailable,
+            ));
+        }
+    } else {
+        entries = entries.push(text(i18n.text("history-loading")));
     }
-    content
-        .push(scrollable(entries).height(Fill))
-        .push(footer)
-        .into()
+    let deletion_notices = (state.removal_error.is_some() || state.system_marked())
+        .then(|| scrollable(deletion_notices).width(Fill).height(Shrink));
+    // The body takes the height left over after laying out the header and actions.
+    let body = column![scrollable(entries).height(Fill), deletion_notices].spacing(spacing::MD);
+    column![header, body, actions].spacing(spacing::LG).into()
 }
 
 struct TargetRow {
@@ -454,7 +448,7 @@ fn target_row<'a>(
     .into()
 }
 
-fn tool_notice(i18n: &I18n, program: &str) -> iced::widget::Text<'static> {
+fn tool_notice<'a>(i18n: &I18n, program: &str) -> iced::widget::Text<'a> {
     let mut args = FluentArgs::new();
     args.set("program", program);
     notice(i18n.with_args("overview-rebuild-tool-unavailable", &args))
@@ -534,10 +528,16 @@ fn confirmation<'a>(
     };
     column![
         text(i18n.text("history-activate-confirm")).size(22),
-        selectable_text::view(path, Font::DEFAULT, 16, colors::TEXT, |action| {
-            Message::SelectText(TextTarget::Confirmation, action)
-        }),
-        notice(i18n.text(warning)),
+        scrollable(
+            column![
+                selectable_text::view(path, Font::DEFAULT, 16, colors::TEXT, |action| {
+                    Message::SelectText(TextTarget::Confirmation, action)
+                }),
+                notice(i18n.text(warning)),
+            ]
+            .spacing(spacing::LG),
+        )
+        .height(Fill),
         row![
             space().width(Fill),
             button(text(i18n.text("history-back")))
@@ -555,7 +555,7 @@ fn confirmation<'a>(
     .into()
 }
 
-fn notice(message: String) -> iced::widget::Text<'static> {
+fn notice<'a>(message: String) -> iced::widget::Text<'a> {
     text(message)
         .size(14)
         .color(colors::WARNING)

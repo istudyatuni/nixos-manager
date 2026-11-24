@@ -1051,15 +1051,17 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
     state.set_snapshot(&app.i18n, &snapshot);
     let renderer = headless().await;
     let size = Size::new(560.0, 420.0);
-    let viewport = Rectangle::with_size(size);
-    let interact = |state: &build_history::State, click_trash, marked| {
+    let interact = |state: &build_history::State, size, click_trash, marked| {
+        let viewport = Rectangle::with_size(size);
         let mut view = state
             .view(&app.i18n, Some(&snapshot), false, None, None)
             .map(Message::BuildHistory);
         let (mut tree, node, labels) = layout(&mut view, &renderer, size);
         let remove = labels.bounds("Удалить выбранные");
-        assert!(remove.x < labels.bounds("Обновить").x);
+        let refresh = labels.bounds("Обновить");
+        assert!(remove.x < refresh.x);
         assert!(remove.y + remove.height <= size.height);
+        assert!(refresh.y + refresh.height <= size.height);
         assert_eq!(
             labels.contains(&app.i18n.text("history-removal-boot-warning")),
             marked
@@ -1107,9 +1109,9 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
         }
         messages
     };
-    assert!(interact(&state, false, false).is_empty());
+    assert!(interact(&state, size, false, false).is_empty());
     for marked in [false, true, false] {
-        let messages = interact(&state, true, marked);
+        let messages = interact(&state, size, true, marked);
         let [Message::BuildHistory(message @ build_history::Message::ToggleRemoval(removal))] =
             messages.as_slice()
         else {
@@ -1119,7 +1121,7 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
         let _ = state.update(message.clone(), Some(&snapshot), false, true);
     }
     assert!(matches!(
-        interact(&state, false, true).as_slice(),
+        interact(&state, size, false, true).as_slice(),
         [Message::BuildHistory(build_history::Message::Remove)]
     ));
     assert!(matches!(
@@ -1137,8 +1139,9 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
     ));
     state.removal_finished(Err(rebuild::Error::Cancelled));
     state.set_snapshot(&app.i18n, &snapshot);
+    let compact = Size::new(560.0 / 1.5, 170.0);
     assert!(matches!(
-        interact(&state, false, true).as_slice(),
+        interact(&state, compact, false, true).as_slice(),
         [Message::BuildHistory(build_history::Message::Remove)]
     ));
     snapshot.targets[0].system.generations = vec![42];
