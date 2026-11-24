@@ -482,7 +482,7 @@ impl TargetDetails {
                 self.booted.then(|| caption_with_help(
                     i18n.text("history-booted"),
                     i18n.text("history-booted-help"),
-                    colors::INFO,
+                    colors::PURPLE,
                 )),
             ]
             .align_y(Center)

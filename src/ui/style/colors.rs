@@ -13,3 +13,4 @@ pub const DANGER: Color = color!(0xc68e85);
 pub const WARNING: Color = color!(0xa8a06d);
 pub const SUCCESS: Color = color!(0x78ac90);
 pub const INFO: Color = color!(0x85a0ca);
+pub const PURPLE: Color = color!(0xb49add);
