@@ -1094,6 +1094,17 @@ async fn build_history_confirmations_show_activation_and_rollback_details() {
     let size = Size::new(560.0, 540.0);
     let compact = Size::new(560.0 / 1.5, 420.0 / 1.5);
     let viewport = Rectangle::with_size(size);
+    let warning = app.i18n.text("history-activation-warning");
+    let confirmation_labels = |state: &build_history::State, snapshot: &history::Snapshot| {
+        layout(
+            &mut state
+                .view(&app.i18n, Some(snapshot), true, None, None)
+                .map(Message::BuildHistory),
+            &renderer,
+            compact,
+        )
+        .2
+    };
     for (index, (generation, show_profile, detail_count)) in
         [(Some(1), true, 2), (Some(0), false, 2), (None, false, 3)]
             .into_iter()
@@ -1167,16 +1178,10 @@ async fn build_history_confirmations_show_activation_and_rollback_details() {
         assert_eq!(*selected_generation, generation);
         let _ = state.update(message.clone(), Some(&snapshot), true, true);
 
-        let labels = layout(
-            &mut state
-                .view(&app.i18n, Some(&snapshot), true, None, None)
-                .map(Message::BuildHistory),
-            &renderer,
-            compact,
-        )
-        .2;
+        let labels = confirmation_labels(&state, &snapshot);
         assert_eq!(labels.focusables.len(), detail_count);
         assert!(labels.contains("загружена"));
+        assert!(!labels.contains(&warning));
         let active_badge = app.i18n.text("history-active");
         assert!(!labels.text.iter().any(|(label, _)| label == &active_badge));
         assert_eq!(labels.contains("системный профиль"), show_profile);
@@ -1217,16 +1222,10 @@ async fn build_history_confirmations_show_activation_and_rollback_details() {
         };
         let _ = state.update(message, Some(&snapshot), true, true);
     }
-    let labels = layout(
-        &mut state
-            .view(&app.i18n, Some(&snapshot), true, None, None)
-            .map(Message::BuildHistory),
-        &renderer,
-        compact,
-    )
-    .2;
+    let labels = confirmation_labels(&state, &snapshot);
     assert_eq!(labels.focusables.len(), 5); // Path, two generations, and two builds.
     assert!(labels.contains("загружена"));
+    assert!(!labels.contains(&warning));
     assert!(labels.contains("системный профиль"));
     let activate = labels.bounds("Активировать");
     assert!(activate.y + activate.height <= compact.height);
@@ -1234,6 +1233,19 @@ async fn build_history_confirmations_show_activation_and_rollback_details() {
         state.update(build_history::Message::Activate, Some(&snapshot), true, true),
         build_history::Action::Activate(rebuild::ReadyTarget::Quick(target)) if target == rollback
     ));
+
+    snapshot.targets[1].system.booted = false;
+    state.set_snapshot(&app.i18n, &snapshot);
+    let _ = state.update(
+        build_history::Message::Select {
+            target: rebuild::ReadyTarget::Quick(rollback),
+            generation: None,
+        },
+        Some(&snapshot),
+        true,
+        true,
+    );
+    assert!(confirmation_labels(&state, &snapshot).contains(&warning));
 }
 
 #[tokio::test]

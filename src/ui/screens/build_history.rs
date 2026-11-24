@@ -644,7 +644,7 @@ fn confirmation<'a>(
         scrollable(
             column![
                 details.view(i18n, false, TextTarget::Confirmation),
-                notice(i18n.text(warning)),
+                (!details.booted).then(|| notice(i18n.text(warning))),
             ]
             .spacing(spacing::LG),
         )
