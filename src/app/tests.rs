@@ -931,101 +931,119 @@ async fn build_history_shows_system_configurations_without_a_repository() {
     assert!(
         refresh.y >= viewport.y + viewport.height && refresh.y + refresh.height <= compact.height
     );
-    for status in ["активна", "загружена"] {
-        assert!(labels.contains(status));
-    }
+    let help_icon = |labels: &Labels, caption| {
+        let caption = labels.bounds(caption);
+        labels
+            .text
+            .iter()
+            .find_map(|(label, bounds)| {
+                (label == "?"
+                    && bounds.x >= caption.x + caption.width
+                    && (caption.y..=caption.y + caption.height).contains(&bounds.center_y()))
+                .then_some(*bounds)
+            })
+            .expect("help icon to the right of the caption")
+    };
     let profile = labels.bounds("системный профиль");
-    let icon = labels.bounds("?");
-    assert!(profile.x + profile.width <= icon.x);
+    help_icon(&labels, "активна");
+    help_icon(&labels, "системный профиль");
+    help_icon(&labels, "загружена");
     assert!(profile.y + profile.height <= labels.focusables[1].y);
 
     let (mut tree, node, labels) = layout(&mut view, &renderer, size);
-    let icon = labels.bounds("?");
     let widget = view.as_widget_mut();
     let layout = Layout::new(&node);
     let window = Rectangle::with_size(size);
-    assert!(
-        widget
-            .overlay(&mut tree, layout, &renderer, &window, Vector::ZERO)
-            .is_none()
-    );
-    widget.update(
-        &mut tree,
-        &Event::Mouse(mouse::Event::CursorMoved {
-            position: icon.center(),
-        }),
-        layout,
-        mouse::Cursor::Available(icon.center()),
-        &renderer,
-        &mut clipboard::Null,
-        &mut Shell::new(&mut Vec::new()),
-        &window,
-    );
-    let tooltip_text = {
-        let tip = widget
-            .overlay(&mut tree, layout, &renderer, &window, Vector::ZERO)
-            .expect("system profile tooltip on hover");
-        let mut tip = overlay::Nested::new(tip);
-        let node = tip.layout(&renderer, size);
-        let mut tooltip_labels = Labels::default();
-        tip.operate(Layout::new(&node), &renderer, &mut tooltip_labels);
-        tooltip_labels.bounds(&app.i18n.text("history-system-profile-help"))
-    };
-    let gap_offset = spacing::MD + spacing::SM / 2.0;
-    let gap_y = if tooltip_text.center_y() > icon.center_y() {
-        tooltip_text.y - gap_offset
-    } else {
-        tooltip_text.y + tooltip_text.height + gap_offset
-    };
-    let gap = Point::new(icon.center_x(), gap_y);
-    assert!(
-        !icon.contains(gap) && !tooltip_text.contains(gap),
-        "icon {icon:?}, tooltip {tooltip_text:?}, gap {gap:?}"
-    );
-    for (point, stays_open) in [
-        (gap, true),
-        (tooltip_text.center(), true),
-        (Point::ORIGIN, false),
+    for (caption, help_key) in [
+        ("активна", "history-active-help"),
+        ("загружена", "history-booted-help"),
+        ("системный профиль", "history-system-profile-help"),
     ] {
-        let cursor = mouse::Cursor::Available(point);
-        let event = Event::Mouse(mouse::Event::CursorMoved { position: point });
-        let underlying_cursor = {
-            let tip = widget
+        let icon = help_icon(&labels, caption);
+        assert!(
+            widget
                 .overlay(&mut tree, layout, &renderer, &window, Vector::ZERO)
-                .expect("tooltip stays open along the pointer's path");
-            let mut tip = overlay::Nested::new(tip);
-            let node = tip.layout(&renderer, size);
-            let tip_layout = Layout::new(&node);
-            tip.update(
-                &event,
-                tip_layout,
-                cursor,
-                &renderer,
-                &mut clipboard::Null,
-                &mut Shell::new(&mut Vec::new()),
-            );
-            if tip.mouse_interaction(tip_layout, cursor, &renderer) == mouse::Interaction::None {
-                cursor
-            } else {
-                mouse::Cursor::Unavailable
-            }
-        };
+                .is_none()
+        );
         widget.update(
             &mut tree,
-            &event,
+            &Event::Mouse(mouse::Event::CursorMoved {
+                position: icon.center(),
+            }),
             layout,
-            underlying_cursor,
+            mouse::Cursor::Available(icon.center()),
             &renderer,
             &mut clipboard::Null,
             &mut Shell::new(&mut Vec::new()),
             &window,
         );
-        assert_eq!(
-            widget
+        let tooltip_text = {
+            let tip = widget
                 .overlay(&mut tree, layout, &renderer, &window, Vector::ZERO)
-                .is_some(),
-            stays_open
+                .expect("status tooltip on hover");
+            let mut tip = overlay::Nested::new(tip);
+            let node = tip.layout(&renderer, size);
+            let mut tooltip_labels = Labels::default();
+            tip.operate(Layout::new(&node), &renderer, &mut tooltip_labels);
+            tooltip_labels.bounds(&app.i18n.text(help_key))
+        };
+        let gap_offset = spacing::MD + spacing::SM / 2.0;
+        let gap_y = if tooltip_text.center_y() > icon.center_y() {
+            tooltip_text.y - gap_offset
+        } else {
+            tooltip_text.y + tooltip_text.height + gap_offset
+        };
+        let gap = Point::new(icon.center_x(), gap_y);
+        assert!(
+            !icon.contains(gap) && !tooltip_text.contains(gap),
+            "icon {icon:?}, tooltip {tooltip_text:?}, gap {gap:?}"
         );
+        for (point, stays_open) in [
+            (gap, true),
+            (tooltip_text.center(), true),
+            (Point::ORIGIN, false),
+        ] {
+            let cursor = mouse::Cursor::Available(point);
+            let event = Event::Mouse(mouse::Event::CursorMoved { position: point });
+            let underlying_cursor = {
+                let tip = widget
+                    .overlay(&mut tree, layout, &renderer, &window, Vector::ZERO)
+                    .expect("tooltip stays open along the pointer's path");
+                let mut tip = overlay::Nested::new(tip);
+                let node = tip.layout(&renderer, size);
+                let tip_layout = Layout::new(&node);
+                tip.update(
+                    &event,
+                    tip_layout,
+                    cursor,
+                    &renderer,
+                    &mut clipboard::Null,
+                    &mut Shell::new(&mut Vec::new()),
+                );
+                if tip.mouse_interaction(tip_layout, cursor, &renderer) == mouse::Interaction::None
+                {
+                    cursor
+                } else {
+                    mouse::Cursor::Unavailable
+                }
+            };
+            widget.update(
+                &mut tree,
+                &event,
+                layout,
+                underlying_cursor,
+                &renderer,
+                &mut clipboard::Null,
+                &mut Shell::new(&mut Vec::new()),
+                &window,
+            );
+            assert_eq!(
+                widget
+                    .overlay(&mut tree, layout, &renderer, &window, Vector::ZERO)
+                    .is_some(),
+                stays_open
+            );
+        }
     }
     let position = labels.bounds("×").center();
     for event in [

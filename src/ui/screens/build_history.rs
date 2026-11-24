@@ -1,6 +1,6 @@
 use fluent_bundle::FluentArgs;
 use iced::{
-    Center, Element, Fill, Font, Shrink, padding,
+    Center, Color, Element, Fill, Font, Shrink, padding,
     widget::{
         button, column, container, mouse_area, row, rule, scrollable, space, text,
         text_editor::{self, Content},
@@ -472,15 +472,20 @@ impl TargetDetails {
         )]
         .spacing(spacing::SM)
         .width(Fill);
-        let badges = [
-            (active, "history-active", colors::SUCCESS),
-            (self.booted, "history-booted", colors::INFO),
-        ];
-        if badges.iter().any(|(show, _, _)| *show) {
-            let statuses = row(badges
-                .into_iter()
-                .filter(|(show, _, _)| *show)
-                .map(|(_, key, color)| text(i18n.text(key)).size(13).color(color).into()))
+        if active || self.booted {
+            let statuses = row![
+                active.then(|| caption_with_help(
+                    i18n.text("history-active"),
+                    i18n.text("history-active-help"),
+                    colors::SUCCESS,
+                )),
+                self.booted.then(|| caption_with_help(
+                    i18n.text("history-booted"),
+                    i18n.text("history-booted-help"),
+                    colors::INFO,
+                )),
+            ]
+            .align_y(Center)
             .spacing(spacing::LG)
             .wrap();
             details = details.push(statuses);
@@ -591,15 +596,18 @@ fn missing_tool_message(i18n: &I18n, program: &str) -> String {
 }
 
 fn profile_caption(i18n: &I18n) -> Element<'static, Message> {
-    row![
-        text(i18n.text("history-system-profile"))
-            .size(13)
-            .color(colors::INFO),
-        popup::help(i18n.text("history-system-profile-help")),
-    ]
-    .align_y(Center)
-    .spacing(spacing::SM)
-    .into()
+    caption_with_help(
+        i18n.text("history-system-profile"),
+        i18n.text("history-system-profile-help"),
+        colors::INFO,
+    )
+}
+
+fn caption_with_help(label: String, help: String, color: Color) -> Element<'static, Message> {
+    row![text(label).size(13).color(color), popup::help(help)]
+        .align_y(Center)
+        .spacing(spacing::SM)
+        .into()
 }
 
 fn build_label(i18n: &I18n, build: &Build) -> String {
