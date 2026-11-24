@@ -2,7 +2,7 @@ use fluent_bundle::FluentArgs;
 use iced::{
     Center, Element, Fill, Font, Shrink, padding,
     widget::{
-        button, column, container, row, rule, scrollable, space, text,
+        button, column, container, mouse_area, row, rule, scrollable, space, text,
         text_editor::{self, Content},
         tooltip,
     },
@@ -26,6 +26,7 @@ pub enum Message {
     Close,
     Dismiss,
     Refresh,
+    HoverRollback(bool),
     Select(ReadyTarget),
     Back,
     Activate,
@@ -53,6 +54,7 @@ pub enum Action {
 #[derive(Default)]
 pub struct State {
     selection: Option<(ReadyTarget, Content)>,
+    rollback_hovered: bool,
     rows: Vec<TargetRow>,
     marked: Vec<Removal>,
     removing: bool,
@@ -70,9 +72,14 @@ impl State {
         match message {
             Message::Close if !self.removing => return Action::Close,
             Message::Dismiss if self.can_dismiss() => return Action::Close,
-            Message::Refresh if !self.removing && snapshot.is_some() => return Action::Refresh,
+            Message::Refresh if !self.removing && snapshot.is_some() => {
+                self.rollback_hovered = false;
+                return Action::Refresh;
+            }
+            Message::HoverRollback(hovered) => self.rollback_hovered = hovered,
             Message::Select(selection) if can_activate && !self.removing => {
                 let path = Content::with_text(&selection.path().to_string_lossy());
+                self.rollback_hovered = false;
                 self.selection = Some((selection, path));
             }
             Message::Back => self.selection = None,
@@ -229,16 +236,29 @@ fn list<'a>(
     } else {
         "history-remove-selected"
     };
-    let actions = row![
-        button(text(i18n.text(delete_label)))
-            .padding([7, 12])
-            .style(buttons::danger)
-            .on_press_maybe(
-                state
-                    .can_remove(snapshot, missing_removal_tool.is_none())
-                    .then_some(Message::Remove),
-            ),
-        space().width(Fill),
+    let rollback_action = snapshot
+        .and_then(|snapshot| snapshot.quick_rollback.as_ref())
+        .map(|rollback| {
+            let rollback_button = button(text(i18n.text("history-quick-rollback")))
+                .padding([7, 12])
+                .style(buttons::primary)
+                .on_press_maybe(
+                    can_activate.then(|| Message::Select(ReadyTarget::Quick(rollback.clone()))),
+                );
+            tooltip(
+                mouse_area(rollback_button)
+                    .on_enter(Message::HoverRollback(true))
+                    .on_exit(Message::HoverRollback(false)),
+                text(i18n.text("history-quick-rollback-help"))
+                    .size(13)
+                    .wrapping(text::Wrapping::WordOrGlyph),
+                tooltip::Position::Top,
+            )
+            .gap(spacing::SM)
+            .style(containers::card)
+        });
+    let has_rollback = rollback_action.is_some();
+    let right_actions = row![
         tooltip(
             button(text(i18n.text("history-refresh")))
                 .padding([7, 12])
@@ -253,8 +273,27 @@ fn list<'a>(
         )
         .gap(spacing::SM)
         .style(containers::card),
+        rollback_action,
     ]
     .spacing(spacing::MD);
+    let actions = row![
+        button(text(i18n.text(delete_label)))
+            .padding([7, 12])
+            .style(buttons::danger)
+            .on_press_maybe(
+                state
+                    .can_remove(snapshot, missing_removal_tool.is_none())
+                    .then_some(Message::Remove),
+            ),
+        (!has_rollback).then(|| space().width(Fill)),
+        right_actions,
+    ]
+    .spacing(spacing::MD);
+    let actions: Element<'_, Message> = if has_rollback {
+        actions.wrap().into()
+    } else {
+        actions.into()
+    };
     let mut deletion_notices = column![].spacing(spacing::MD);
     if let Some(error) = state.removal_error {
         let key = match error {
@@ -291,28 +330,16 @@ fn list<'a>(
         if let Some(program) = activation_tool {
             entries = entries.push(tool_notice(i18n, program));
         }
-        if let Some(rollback) = &snapshot.quick_rollback {
-            entries = entries.push(
-                button(text(i18n.text("history-quick-rollback")))
-                    .padding([7, 12])
-                    .style(buttons::primary)
-                    .on_press_maybe(
-                        can_activate.then(|| Message::Select(ReadyTarget::Quick(rollback.clone()))),
-                    ),
-            );
-        }
         if snapshot.targets.is_empty() && !snapshot.unavailable {
             entries = entries.push(text(i18n.text("history-empty")));
         }
-        for (index, entry) in state.rows.iter().enumerate() {
+        for index in 0..state.rows.len() {
             entries = entries.push(rule::horizontal(1)).push(target_row(
                 i18n,
-                &snapshot.targets[entry.target_index],
-                entry,
+                snapshot,
+                state,
                 index,
                 can_activate,
-                &state.marked,
-                !state.removing && !snapshot.unavailable,
             ));
         }
     } else {
@@ -365,13 +392,20 @@ fn generation_label(i18n: &I18n, number: u64) -> String {
 
 fn target_row<'a>(
     i18n: &I18n,
-    target: &Target,
-    labels: &'a TargetRow,
+    snapshot: &Snapshot,
+    state: &'a State,
     index: usize,
     can_activate: bool,
-    marked: &[Removal],
-    can_toggle: bool,
 ) -> Element<'a, Message> {
+    let labels = &state.rows[index];
+    let target = &snapshot.targets[labels.target_index];
+    let marked = &state.marked;
+    let can_toggle = !state.removing && !snapshot.unavailable;
+    let highlight_activation = state.rollback_hovered
+        && snapshot
+            .quick_rollback
+            .as_ref()
+            .is_some_and(|rollback| rollback.target == target.store_path);
     let mut details = column![selectable_text::view(
         &labels.path,
         Font::DEFAULT,
@@ -444,7 +478,11 @@ fn target_row<'a>(
                 i18n.text("history-activate"),
                 can_activate
                     .then(|| Message::Select(ReadyTarget::Selected(target.store_path.clone()))),
-                buttons::secondary,
+                if highlight_activation {
+                    buttons::highlighted
+                } else {
+                    buttons::secondary
+                },
             )
         }),
     ]
