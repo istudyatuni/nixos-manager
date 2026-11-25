@@ -12,8 +12,8 @@ use iced::{
 
 use crate::{
     config::{
-        CONFIG_DIRECTORY, Config, DEFAULT_REPO_PATH, SaveError, UI_SCALES, display_repo_path,
-        github_repository, valid_token,
+        CONFIG_DIRECTORY, Config, DEFAULT_REPO_PATH, RepositoryUrlError, SaveError, UI_SCALES,
+        display_repo_path, github_repository, valid_token,
     },
     git::{self, Branch, RemoteBranchesError, RemoteRefs},
     i18n::{I18n, LanguagePreference},
@@ -32,6 +32,7 @@ pub enum Message {
     LanguageChanged(LanguagePreference),
     ScaleChanged(u16),
     RepositoryChanged(String),
+    RepositoryBlurred,
     TokenChanged(String),
     PathChanged(String),
     BranchChanged(String),
@@ -91,7 +92,8 @@ pub struct State {
     error: Option<SaveError>,
     saving: bool,
     git_available: bool,
-    repository: Option<String>,
+    repository: Result<String, RepositoryUrlError>,
+    repository_error: Option<RepositoryUrlError>,
     local: Lookup<Vec<Branch>>,
     remote: Lookup<Result<RemoteRefs, RemoteBranchesError>, RemoteQuery>,
     branch_names: Vec<String>,
@@ -106,6 +108,7 @@ impl State {
         Self {
             original: Box::new(draft.clone()),
             repository: github_repository(draft.repository.trim()),
+            repository_error: None,
             draft,
             error: None,
             saving: false,
@@ -143,17 +146,25 @@ impl State {
         !self.saving && !self.has_changes()
     }
 
+    fn repository_validation_error(&self) -> Option<RepositoryUrlError> {
+        if self.original.repository_path().is_some() || self.draft.requires_repository() {
+            self.repository.as_ref().err().copied()
+        } else {
+            None
+        }
+    }
+
     fn needs_head(&self) -> bool {
         self.git_available
             && self
                 .repository
                 .as_deref()
-                .is_some_and(|repository| !same_repository(repository, &self.original.repository))
+                .is_ok_and(|repository| !same_repository(repository, &self.original.repository))
     }
 
     fn needs_lookup_to_save(&self) -> bool {
         self.git_available
-            && self.repository.is_some()
+            && self.repository.is_ok()
             && (self.needs_head() || self.draft.token.trim() != self.original.token.trim())
             && match self.remote {
                 Lookup::Finished(Ok(_)) => false,
@@ -166,7 +177,7 @@ impl State {
 
     fn can_query_remote(&self, query: RemoteQuery) -> bool {
         self.git_available
-            && self.repository.is_some()
+            && self.repository.is_ok()
             && valid_token(self.draft.token.trim())
             && match &self.remote {
                 Lookup::Pending => true,
@@ -181,7 +192,7 @@ impl State {
     }
 
     pub fn branch_lookup(&self, remote: Option<RemoteQuery>) -> Option<BranchLookup> {
-        let repository = self.repository.as_ref()?;
+        let repository = self.repository.as_ref().ok()?;
         let check_local = matches!(self.local, Lookup::Pending);
         let remote = remote.filter(|query| self.can_query_remote(*query));
         if !self.git_available || (!check_local && remote.is_none()) {
@@ -280,6 +291,10 @@ impl State {
                 };
             }
             Message::InputFocused => return Action::LookupBranches(None),
+            Message::RepositoryBlurred => {
+                self.repository_error = self.repository_validation_error();
+                return Action::None;
+            }
             Message::LoadRemoteBranches => {
                 return Action::LookupBranches(Some(RemoteQuery::Branches));
             }
@@ -288,6 +303,10 @@ impl State {
                     return Action::None;
                 }
                 self.error = None;
+                if let Some(error) = self.repository_validation_error() {
+                    self.repository_error = Some(error);
+                    return Action::None;
+                }
                 if !valid_token(self.draft.token.trim()) {
                     self.error = Some(SaveError::Token);
                     return Action::None;
@@ -326,6 +345,7 @@ impl State {
                     }
                 }
                 self.repository = repository;
+                self.repository_error = None;
                 self.draft.repository = value;
             }
             Message::TokenChanged(value) => {
@@ -346,7 +366,8 @@ impl State {
                 self.auto_branch = false;
             }
             Message::FlakeDirectoryChanged(value) => self.draft.flake_directory = value.into(),
-            Message::InputFocused
+            Message::RepositoryBlurred
+            | Message::InputFocused
             | Message::LoadRemoteBranches
             | Message::Cancel
             | Message::BackdropPressed
@@ -367,12 +388,30 @@ impl State {
         let editing = !self.saving;
         let submit =
             (self.can_save(operation_idle) && !self.save_after_lookup).then_some(Message::Save);
+        let (repository_error, footer_error) = match self.error {
+            Some(SaveError::Repository(error)) => (Some(error), None),
+            error => (self.repository_error, error),
+        };
         let repository = text_input(
             &i18n.text("settings-repository-placeholder"),
             &self.draft.repository,
         )
+        .invalid(repository_error.is_some())
         .on_input_maybe(editing.then_some(Message::RepositoryChanged))
         .on_submit_maybe(submit.clone());
+        let mut repository = field(
+            i18n.text("settings-repository"),
+            RepositoryInput::new(repository, false)
+                .on_blur(Message::RepositoryBlurred)
+                .into_element(),
+        );
+        if let Some(error) = repository_error {
+            repository = repository.push(
+                text(error_text(i18n, SaveError::Repository(error)))
+                    .size(13)
+                    .color(colors::DANGER),
+            );
+        }
         let token = text_input("", &self.draft.token)
             .secure(true)
             .on_input_maybe(editing.then_some(Message::TokenChanged))
@@ -404,7 +443,7 @@ impl State {
         )
         .on_input_maybe(editing.then_some(Message::PathChanged))
         .on_submit_maybe(submit.clone());
-        let branch_editing = editing && self.repository.is_some();
+        let branch_editing = editing && self.repository.is_ok();
         let branch = text_input(
             &i18n.text("settings-branch-placeholder"),
             &self.draft.branch,
@@ -478,10 +517,7 @@ impl State {
         .spacing(spacing::LG);
         let repository = column![
             text(i18n.text("settings-repository-section")).size(18),
-            field(
-                i18n.text("settings-repository"),
-                RepositoryInput::new(repository, false).into_element(),
-            ),
+            repository,
             token,
             field(
                 i18n.text("settings-path"),
@@ -508,7 +544,7 @@ impl State {
         let form = column![interface, repository].spacing(spacing::XL);
 
         let mut footer = Column::new().spacing(spacing::MD);
-        if let Some(error) = self.error {
+        if let Some(error) = footer_error {
             footer = footer.push(text(error_text(i18n, error)).size(14).color(colors::DANGER));
         }
         if !operation_idle {
@@ -652,7 +688,12 @@ fn field<'a>(label: String, input: impl Into<Element<'a, Message>>) -> Column<'a
 
 fn error_text(i18n: &I18n, error: SaveError) -> String {
     match error {
-        SaveError::Repository => i18n.text("settings-error-repository"),
+        SaveError::Repository(error) => i18n.text(match error {
+            RepositoryUrlError::InvalidUrl => "settings-repository-invalid-hint",
+            RepositoryUrlError::RequiresHttps => "settings-repository-https-hint",
+            RepositoryUrlError::InvalidDomain => "settings-repository-domain-hint",
+            RepositoryUrlError::InvalidPath => "settings-repository-path-hint",
+        }),
         SaveError::Token => i18n.text("settings-error-token"),
         SaveError::Path => i18n.text("settings-error-path"),
         SaveError::Branch => i18n.text("settings-error-branch"),

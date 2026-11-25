@@ -29,6 +29,7 @@ const MENU_PADDING: Padding = Padding {
 pub(super) struct RepositoryInput<'a> {
     input: TextInput<'a, Message>,
     on_focus: bool,
+    on_blur: Option<Message>,
     suggestions: Option<Suggestions<'a>>,
     menu_style: menu::StyleFn<'a, Theme>,
 }
@@ -70,9 +71,15 @@ impl<'a> RepositoryInput<'a> {
         Self {
             input,
             on_focus,
+            on_blur: None,
             suggestions: None,
             menu_style: Box::new(pick_lists::menu),
         }
+    }
+
+    pub(super) fn on_blur(mut self, message: Message) -> Self {
+        self.on_blur = Some(message);
+        self
     }
 
     pub(super) fn branches(
@@ -269,6 +276,9 @@ impl Widget<Message, Theme, Renderer> for RepositoryInput<'_> {
                 shell.publish(Message::InputFocused);
             }
             if !focused {
+                if let Some(message) = &self.on_blur {
+                    shell.publish(message.clone());
+                }
                 state.show(MenuMode::Filtered);
                 state.hovered = None;
             }

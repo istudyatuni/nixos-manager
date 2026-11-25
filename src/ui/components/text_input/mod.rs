@@ -82,6 +82,13 @@ impl<'a, Message: Clone> TextInput<'a, Message> {
         self
     }
 
+    pub fn invalid(mut self, invalid: bool) -> Self {
+        if invalid {
+            self.inner = self.inner.style(inputs::invalid_input);
+        }
+        self
+    }
+
     pub fn width(mut self, width: impl Into<Length>) -> Self {
         self.inner = self.inner.width(width);
         self

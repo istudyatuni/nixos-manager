@@ -19,7 +19,7 @@ pub fn write_credential() -> io::Result<()> {
     let (Ok(repository), Ok(token)) = (env::var(HELPER_REPOSITORY), env::var(HELPER_TOKEN)) else {
         return Ok(());
     };
-    let Some(repository) = github_url(&repository) else {
+    let Ok(repository) = github_url(&repository) else {
         return Ok(());
     };
     let (mut protocol, mut host, mut path) = (None, None, None);
@@ -68,8 +68,8 @@ pub(super) fn matching_remote<'a>(output: &'a [u8], repository: &str) -> Result<
         .and_then(|output| output.strip_suffix('\n'))
         .filter(|remote| !remote.chars().any(char::is_whitespace))
         .ok_or(Error::Origin)?;
-    let url = github_url(remote).ok_or(Error::Origin)?;
-    let expected = github_url(repository).ok_or(Error::Origin)?;
+    let url = github_url(remote).map_err(|_| Error::Origin)?;
+    let expected = github_url(repository).map_err(|_| Error::Origin)?;
     // Compare the literal URL path too. The URL parser resolves dot segments.
     let raw_path = remote
         .split_once("://")

@@ -19,6 +19,110 @@ use super::support::{Labels, boot_with_cache, headless, layout};
 mod branches;
 
 #[tokio::test]
+async fn settings_show_an_invalid_repository_url_under_the_field_on_blur() {
+    use iced::advanced::widget::{Operation, operation};
+
+    let renderer = headless().await;
+    let size = Size::new(800.0, 1000.0);
+    let cases = [
+        (
+            "http://github.com/example/repository",
+            "Enter an HTTPS link to a GitHub repository",
+            false,
+        ),
+        ("just some text", "Enter a valid URL", false),
+        (
+            "https://gitlab.com/example/repository",
+            "Enter a link with the github.com domain",
+            false,
+        ),
+        (
+            "https://git hub.com/example/repository",
+            "Enter a link with the github.com domain",
+            false,
+        ),
+        (
+            "https://github.com/example",
+            "Enter a link in the format https://github.com/owner/repo",
+            true,
+        ),
+    ];
+    for (url, hint, use_tab) in cases {
+        let mut app = boot_with_cache(Ok(None));
+        let _ = app.update(Message::OpenSettings);
+        let _ = app.update(Message::Settings(settings::Message::RepositoryChanged(
+            url.into(),
+        )));
+
+        let messages = {
+            let mut view = app.view();
+            let (mut tree, node, labels) = layout(&mut view, &renderer, size);
+            assert!(!labels.contains(hint));
+            let widget = view.as_widget_mut();
+            let root = Layout::new(&node);
+            let mut messages = Vec::new();
+            let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+            widget.update(
+                &mut tree,
+                &press,
+                root,
+                mouse::Cursor::Available(labels.inputs[0].center()),
+                &renderer,
+                &mut clipboard::Null,
+                &mut Shell::new(&mut messages),
+                &Rectangle::with_size(size),
+            );
+            assert!(messages.is_empty());
+
+            let (event, cursor) = if use_tab {
+                let mut focus_next = operation::focusable::focus_next::<()>();
+                widget.operate(&mut tree, root, &renderer, &mut focus_next);
+                let operation::Outcome::Chain(mut move_focus) = focus_next.finish() else {
+                    panic!("expected a focus traversal");
+                };
+                widget.operate(&mut tree, root, &renderer, move_focus.as_mut());
+                (
+                    Event::Window(window::Event::RedrawRequested(iced::time::Instant::now())),
+                    mouse::Cursor::Unavailable,
+                )
+            } else {
+                (press, mouse::Cursor::Available(labels.inputs[1].center()))
+            };
+            widget.update(
+                &mut tree,
+                &event,
+                root,
+                cursor,
+                &renderer,
+                &mut clipboard::Null,
+                &mut Shell::new(&mut messages),
+                &Rectangle::with_size(size),
+            );
+            messages
+        };
+        assert!(messages.iter().any(|message| matches!(
+            message,
+            Message::Settings(settings::Message::RepositoryBlurred)
+        )));
+        for message in messages {
+            let _ = app.update(message);
+        }
+        let labels = layout(&mut app.view(), &renderer, size).2;
+        let hint_bounds = labels.bounds(hint);
+        let input = labels.inputs[0];
+        assert!(input.y + input.height <= hint_bounds.y);
+        assert!(hint_bounds.y < labels.bounds("GitHub access token").y);
+
+        let _ = app.update(Message::Settings(settings::Message::RepositoryChanged(
+            "https://github.com/example/repository".into(),
+        )));
+        let _ = app.update(Message::Settings(settings::Message::RepositoryBlurred));
+        let labels = layout(&mut app.view(), &renderer, size).2;
+        assert!(!labels.contains(hint));
+    }
+}
+
+#[tokio::test]
 async fn toolbar_settings_menu_opens_both_dialogs_without_a_repository() {
     let mut app = boot_with_cache(Ok(None));
     let renderer = headless().await;
@@ -415,9 +519,12 @@ async fn middle_click_pastes_primary_into_editable_settings_fields() {
             "Subdirectory containing flake.nix",
         ],
     );
-    let mut changes = repository
-        .iter()
-        .filter(|message| !matches!(message, Settings(Repo::InputFocused)));
+    let mut changes = repository.iter().filter(|message| {
+        !matches!(
+            message,
+            Settings(Repo::InputFocused | Repo::RepositoryBlurred)
+        )
+    });
     assert!(matches!(
         changes.next(),
         Some(Settings(Repo::RepositoryChanged(value))) if value == "éXhttps://github.com/example/repository"

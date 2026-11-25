@@ -64,6 +64,12 @@ pub fn input(_theme: &Theme, status: text_input::Status) -> text_input::Style {
     }
 }
 
+pub fn invalid_input(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    let mut style = input(theme, status);
+    style.border.color = colors::DANGER;
+    style
+}
+
 pub fn selectable_text(color: Color) -> text_editor::Style {
     text_editor::Style {
         background: Color::TRANSPARENT.into(),

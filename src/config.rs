@@ -8,7 +8,7 @@ use std::{
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tempfile::NamedTempFile;
-use url::Url;
+use url::{ParseError, Url};
 
 use crate::i18n::LanguagePreference;
 
@@ -48,12 +48,20 @@ impl Default for Config {
 
 #[derive(Debug, Clone, Copy)]
 pub enum SaveError {
-    Repository,
+    Repository(RepositoryUrlError),
     Token,
     Path,
     Branch,
     FlakeDirectory,
     Write,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepositoryUrlError {
+    InvalidUrl,
+    RequiresHttps,
+    InvalidDomain,
+    InvalidPath,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +114,10 @@ impl Config {
         (!self.repository.is_empty()).then_some(self.path.as_path())
     }
 
+    pub fn requires_repository(&self) -> bool {
+        !self.repository.is_empty() || !self.token.is_empty() || !self.branch.is_empty()
+    }
+
     fn validate(&mut self, home: &Path, repository_required: bool) -> Result<(), SaveError> {
         self.flake_directory = relative_flake_directory(&self.flake_directory)?;
         if !UI_SCALES.contains(&self.ui_scale) {
@@ -113,16 +125,13 @@ impl Config {
         }
 
         // Interface preferences can be saved before a repository is set up.
-        if !repository_required
-            && self.repository.is_empty()
-            && self.token.is_empty()
-            && self.branch.is_empty()
-        {
+        if !repository_required && !self.requires_repository() {
             self.path = absolute_repo_path(&self.path, home)?;
             return Ok(());
         }
 
-        self.repository = github_repository(self.repository.trim()).ok_or(SaveError::Repository)?;
+        self.repository =
+            github_repository(self.repository.trim()).map_err(SaveError::Repository)?;
 
         let token = self.token.trim();
         if !valid_token(token) {
@@ -174,11 +183,12 @@ pub fn display_repo_path<'a>(path: &'a Path, home: Option<&Path>) -> Cow<'a, Pat
     }
 }
 
-pub fn github_repository(input: &str) -> Option<String> {
+pub fn github_repository(input: &str) -> Result<String, RepositoryUrlError> {
     let url = github_url(input)?;
-    let mut segments = url.path_segments()?;
-    let owner = segments.next()?;
-    let repo = segments.next()?;
+    let mut segments = url.path_segments().ok_or(RepositoryUrlError::InvalidPath)?;
+    let (Some(owner), Some(repo)) = (segments.next(), segments.next()) else {
+        return Err(RepositoryUrlError::InvalidPath);
+    };
     let name = repo.strip_suffix(".git").unwrap_or(repo);
     let valid_owner = !owner.is_empty()
         && owner
@@ -191,21 +201,31 @@ pub fn github_repository(input: &str) -> Option<String> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
 
-    (valid_owner && valid_repo).then(|| format!("https://github.com/{owner}/{repo}"))
+    (valid_owner && valid_repo)
+        .then(|| format!("https://github.com/{owner}/{repo}"))
+        .ok_or(RepositoryUrlError::InvalidPath)
 }
 
-pub fn github_url(input: &str) -> Option<Url> {
-    let url = Url::parse(input).ok()?;
-    if url.scheme() != "https"
-        || url.host_str() != Some("github.com")
-        || url.port().is_some()
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
-        return None;
+pub fn github_url(input: &str) -> Result<Url, RepositoryUrlError> {
+    let url = Url::parse(input).map_err(|error| match error {
+        ParseError::EmptyHost
+        | ParseError::IdnaError
+        | ParseError::InvalidDomainCharacter
+        | ParseError::InvalidIpv4Address
+        | ParseError::InvalidIpv6Address => RepositoryUrlError::InvalidDomain,
+        _ => RepositoryUrlError::InvalidUrl,
+    })?;
+    if url.scheme() != "https" {
+        return Err(RepositoryUrlError::RequiresHttps);
+    }
+    if url.host_str() != Some("github.com") {
+        return Err(RepositoryUrlError::InvalidDomain);
+    }
+    if url.port().is_some() || !url.username().is_empty() || url.password().is_some() {
+        return Err(RepositoryUrlError::InvalidUrl);
     }
 
-    Some(url)
+    Ok(url)
 }
 
 pub fn absolute_repo_path(input: &Path, home: &Path) -> Result<PathBuf, SaveError> {
