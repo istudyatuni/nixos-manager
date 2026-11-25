@@ -262,7 +262,15 @@ async fn journal_icons_keep_alignment_and_show_tooltips_above() {
             panic!("Expected four journal icon buttons, found {controls:?}");
         };
         let heading = labels.bounds("Логи");
+        let chevron = labels.bounds(icon::glyph(if expanded {
+            "chevron_up"
+        } else {
+            "chevron_down"
+        }));
+        let chevron_offset = chevron.center_y() - toggle.center_y();
+        let expected_offset = if expanded { 0.0 } else { 1.0 };
 
+        assert!((chevron_offset - expected_offset).abs() < 0.5);
         assert!((interrupt.center_x() - size.width / 2.0).abs() < 1.0);
         assert!(toggle.x + toggle.width <= heading.x);
         assert!(heading.x + heading.width <= interrupt.x);
@@ -1003,6 +1011,37 @@ async fn overview_shows_saved_cache_warnings_without_a_repository_or_cli() {
     let _ = app.update(Message::CacheForgotten(true));
     assert!(app.cache.is_ok_and(|cache| cache.is_none()));
     assert!(app.cache_expiration_warning.is_none());
+}
+
+#[tokio::test]
+async fn clicking_the_checkmark_toggles_the_checkbox() {
+    let mut app = boot_with_cache(Ok(None));
+    app.config = Some(Config {
+        repository: "https://github.com/example/config".into(),
+        ..Config::default()
+    });
+    let renderer = headless().await;
+    let size = Size::new(800.0, 540.0);
+    let mut view = app.view();
+    let (mut tree, node, labels) = layout(&mut view, &renderer, size);
+    let checkbox = labels.bounds(&app.i18n.text("overview-activate"));
+    let center = Point::new(checkbox.x + 8.0, checkbox.center_y());
+    let viewport = Rectangle::with_size(size);
+    let mut messages = Vec::new();
+    view.as_widget_mut().update(
+        &mut tree,
+        &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        Layout::new(&node),
+        mouse::Cursor::Available(center),
+        &renderer,
+        &mut clipboard::Null,
+        &mut Shell::new(&mut messages),
+        &viewport,
+    );
+    assert!(matches!(
+        messages.as_slice(),
+        [Message::Overview(overview::Message::SetActivate(false))]
+    ));
 }
 
 #[tokio::test]

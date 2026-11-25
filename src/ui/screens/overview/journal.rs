@@ -1,6 +1,6 @@
 use fluent_bundle::FluentArgs;
 use iced::{
-    Center, Color, Element, Fill, Font,
+    Center, Color, Element, Fill, Font, padding,
     widget::{column, container, row, text},
 };
 
@@ -60,13 +60,14 @@ fn controls<'a>(
     expanded: bool,
     has_journal: bool,
 ) -> Element<'a, Message> {
-    let (toggle_label, arrow) = if expanded {
-        ("overview-hide-journal", icon::chevron_up())
+    let (toggle_label, arrow, top_padding) = if expanded {
+        ("overview-hide-journal", icon::chevron_up(), 0)
     } else {
-        ("overview-show-journal", icon::chevron_down())
+        // Lower the down chevron slightly so it looks centered in the button.
+        ("overview-show-journal", icon::chevron_down(), 2)
     };
     let toggle = icon_button::view(
-        arrow,
+        container(arrow.size(22)).padding(padding::top(top_padding)),
         i18n.text(toggle_label),
         Some(Message::ToggleJournal),
         buttons::secondary,

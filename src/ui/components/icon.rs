@@ -1,9 +1,8 @@
 use iced::{
     Font,
-    widget::{checkbox, pick_list, text},
+    widget::{pick_list, text},
 };
 
-#[allow(dead_code)]
 mod lucide {
     include!(concat!(env!("OUT_DIR"), "/src/ui/components/icon.rs"));
 }
@@ -24,16 +23,6 @@ pub fn glyph(name: &str) -> &'static str {
 
 pub fn code_point(name: &str) -> char {
     glyph(name).chars().next().expect("Lucide code point")
-}
-
-pub fn checkmark() -> checkbox::Icon<Font> {
-    checkbox::Icon {
-        font: TYPEFACE,
-        code_point: code_point("check"),
-        size: Some(14.0.into()),
-        line_height: text::LineHeight::default(),
-        shaping: text::Shaping::Basic,
-    }
 }
 
 pub fn pick_list_handle() -> pick_list::Handle<Font> {

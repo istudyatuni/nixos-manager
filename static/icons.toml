@@ -2,7 +2,6 @@
 module = "ui::components::icon"
 
 [icons]
-check = "check"
 chevron_down = "chevron-down"
 chevron_up = "chevron-up"
 clear_selection = "square-minus"

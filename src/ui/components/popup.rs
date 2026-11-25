@@ -14,9 +14,14 @@ use super::icon;
 use crate::ui::style::{colors, containers, spacing};
 
 pub fn help<'a, Message: Clone + 'a>(description: String) -> Element<'a, Message> {
-    let icon = container(icon::help().size(16).color(colors::INFO)).center(16);
+    const ICON_SIZE: f32 = 16.0;
+    // Match the line height to the square so the glyph sits at its center.
+    let icon = icon::help()
+        .size(ICON_SIZE)
+        .line_height(1.0)
+        .color(colors::INFO);
     on_hover(
-        icon,
+        container(icon).center(ICON_SIZE),
         container(
             text(description)
                 .size(13)

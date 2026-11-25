@@ -1,7 +1,7 @@
 use fluent_bundle::FluentArgs;
 use iced::{
     Center, Color, Element, Fill, Font, Left, Padding, Shrink,
-    widget::{button, checkbox, column, container, responsive, row, scrollable, text, text_editor},
+    widget::{button, column, container, responsive, row, scrollable, text, text_editor},
 };
 use std::{borrow::Cow, path::Path};
 
@@ -11,8 +11,8 @@ use crate::{
     i18n::I18n,
     rebuild,
     ui::{
-        components::{icon, menu, popup},
-        style::{buttons, colors, containers, inputs, spacing},
+        components::{checkbox, icon, menu, popup},
+        style::{buttons, colors, containers, spacing},
     },
 };
 
@@ -234,24 +234,20 @@ fn configured<'a>(
     let needs_build = repository.needs_build;
     let options = row![
         row![
-            checkbox(steps.boot)
-                .label(i18n.text("overview-add-to-boot"))
-                .icon(icon::checkmark())
-                .size(16)
-                .spacing(spacing::MD)
-                .style(inputs::checkbox_style)
-                .on_toggle_maybe((!repository.busy).then_some(Message::SetBoot)),
+            checkbox::view(
+                steps.boot,
+                i18n.text("overview-add-to-boot"),
+                (!repository.busy).then_some(Message::SetBoot),
+            ),
             popup::help(i18n.text("overview-add-to-boot-help")),
         ]
         .spacing(spacing::SM)
         .align_y(Center),
-        checkbox(steps.activate)
-            .label(i18n.text("overview-activate"))
-            .icon(icon::checkmark())
-            .size(16)
-            .spacing(spacing::MD)
-            .style(inputs::checkbox_style)
-            .on_toggle_maybe((!repository.busy).then_some(Message::SetActivate)),
+        checkbox::view(
+            steps.activate,
+            i18n.text("overview-activate"),
+            (!repository.busy).then_some(Message::SetActivate),
+        ),
     ]
     .spacing(spacing::XL)
     .align_y(Center)
