@@ -25,10 +25,10 @@ pub fn help<'a, Message: Clone + 'a>(description: String) -> Element<'a, Message
         container(
             text(description)
                 .size(13)
-                .width(240)
                 .wrapping(text::Wrapping::WordOrGlyph),
         )
         .padding(spacing::MD)
+        .max_width(240.0 + 2.0 * spacing::MD)
         .style(containers::card),
     )
 }

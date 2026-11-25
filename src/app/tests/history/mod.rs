@@ -190,7 +190,15 @@ async fn build_history_shows_system_configurations_without_a_repository() {
             let node = tip.layout(&renderer, size);
             let mut tooltip_labels = Labels::default();
             tip.operate(Layout::new(&node), &renderer, &mut tooltip_labels);
-            tooltip_labels.bounds(&app.i18n.text(help_key))
+            let tooltip_text = tooltip_labels.bounds(&app.i18n.text(help_key));
+            match help_key {
+                "history-active-help" => {
+                    assert!(tooltip_labels.containers[0].width < 240.0 + 2.0 * spacing::MD);
+                }
+                "history-system-profile-help" => assert!(tooltip_text.height > 26.0),
+                _ => {}
+            }
+            tooltip_text
         };
         let gap_offset = spacing::MD + spacing::SM / 2.0;
         let gap_y = if tooltip_text.center_y() > icon.center_y() {
