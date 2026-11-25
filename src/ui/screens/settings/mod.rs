@@ -34,6 +34,8 @@ pub enum Message {
     RepositoryChanged(String),
     RepositoryBlurred,
     TokenChanged(String),
+    TokenFocused,
+    TokenBlurred,
     PathChanged(String),
     BranchChanged(String),
     FlakeDirectoryChanged(String),
@@ -94,8 +96,12 @@ pub struct State {
     git_available: bool,
     repository: Result<String, RepositoryUrlError>,
     repository_error: Option<RepositoryUrlError>,
+    token_focused: bool,
+    token_invalid: bool,
+    show_access_errors: bool,
     local: Lookup<Vec<Branch>>,
     remote: Lookup<Result<RemoteRefs, RemoteBranchesError>, RemoteQuery>,
+    remote_access_confirmed: bool,
     branch_names: Vec<String>,
     auto_branch: bool,
     save_after_lookup: bool,
@@ -109,12 +115,16 @@ impl State {
             original: Box::new(draft.clone()),
             repository: github_repository(draft.repository.trim()),
             repository_error: None,
+            token_focused: false,
+            token_invalid: false,
+            show_access_errors: false,
             draft,
             error: None,
             saving: false,
             git_available,
             local: Lookup::Pending,
             remote: Lookup::Pending,
+            remote_access_confirmed: false,
             branch_names: Vec::new(),
             auto_branch: false,
             save_after_lookup: false,
@@ -131,7 +141,11 @@ impl State {
 
     pub fn save_failed(&mut self, error: SaveError) {
         self.saving = false;
-        self.error = Some(error);
+        match error {
+            SaveError::Repository(error) => self.repository_error = Some(error),
+            SaveError::Token => self.token_invalid = true,
+            error => self.error = Some(error),
+        }
     }
 
     fn has_changes(&self) -> bool {
@@ -162,17 +176,80 @@ impl State {
                 .is_ok_and(|repository| !same_repository(repository, &self.original.repository))
     }
 
-    fn needs_lookup_to_save(&self) -> bool {
+    fn repository_access_changed(&self) -> bool {
         self.git_available
             && self.repository.is_ok()
             && (self.needs_head() || self.draft.token.trim() != self.original.token.trim())
-            && match self.remote {
-                Lookup::Finished(Ok(_)) => false,
-                Lookup::Finished(Err(RemoteBranchesError::Network)) => {
-                    self.draft.token.trim().is_empty()
-                }
-                _ => true,
+    }
+
+    fn check_repository_access(&self) -> Action {
+        if self.repository_access_changed() && self.can_query_remote(RemoteQuery::Head) {
+            Action::LookupBranches(Some(RemoteQuery::Head))
+        } else {
+            Action::None
+        }
+    }
+
+    fn access_denied(&self) -> bool {
+        matches!(
+            self.remote,
+            Lookup::Finished(Err(
+                RemoteBranchesError::AccessDenied | RemoteBranchesError::Authentication
+            ))
+        )
+    }
+
+    fn access_feedback_visible(&self) -> bool {
+        !self.token_focused || self.show_access_errors
+    }
+
+    fn repository_access_status(&self, i18n: &I18n) -> Option<(String, iced::Color)> {
+        if !self.access_feedback_visible() {
+            return None;
+        }
+        let (key, color) = match self.remote {
+            Lookup::Running {
+                query: RemoteQuery::Head,
+                ..
+            } => ("settings-repository-checking-hint", colors::INFO),
+            Lookup::Finished(Err(RemoteBranchesError::AccessDenied)) => {
+                let key = if self.draft.token.trim().is_empty() {
+                    "settings-repository-unavailable-anonymous-hint"
+                } else {
+                    "settings-repository-unavailable-hint"
+                };
+                (key, colors::DANGER)
             }
+            Lookup::Finished(Err(RemoteBranchesError::Network))
+                if !self.remote_access_confirmed =>
+            {
+                ("settings-repository-network-hint", colors::WARNING)
+            }
+            Lookup::Finished(Err(RemoteBranchesError::TimedOut(timeout)))
+                if !self.remote_access_confirmed =>
+            {
+                let mut args = FluentArgs::new();
+                args.set("seconds", timeout.as_secs());
+                return Some((
+                    i18n.with_args("settings-repository-timeout-hint", &args),
+                    colors::WARNING,
+                ));
+            }
+            Lookup::Finished(Err(RemoteBranchesError::Unavailable))
+                if !self.remote_access_confirmed =>
+            {
+                ("settings-repository-check-failed-hint", colors::WARNING)
+            }
+            _ => return None,
+        };
+        Some((i18n.text(key), color))
+    }
+
+    fn reset_remote_lookup(&mut self) {
+        self.remote = Lookup::Pending;
+        self.remote_access_confirmed = false;
+        self.show_access_errors = false;
+        self.update_branch_names();
     }
 
     fn can_query_remote(&self, query: RemoteQuery) -> bool {
@@ -242,8 +319,12 @@ impl State {
         result: Result<RemoteRefs, RemoteBranchesError>,
         operation_idle: bool,
     ) -> Option<Config> {
+        let succeeded = result.is_ok();
         if !self.remote.finish(id, result) {
             return None;
+        }
+        if succeeded || self.access_denied() {
+            self.remote_access_confirmed = succeeded;
         }
         self.update_branch_names();
         if self.needs_head()
@@ -256,7 +337,7 @@ impl State {
         }
         (std::mem::take(&mut self.save_after_lookup)
             && self.can_save(operation_idle)
-            && !self.needs_lookup_to_save())
+            && !self.access_denied())
         .then(|| self.start_save())
     }
 
@@ -277,6 +358,34 @@ impl State {
         self.draft.clone()
     }
 
+    fn submit(&mut self, operation_idle: bool) -> Action {
+        if !self.can_save(operation_idle) || self.save_after_lookup {
+            return Action::None;
+        }
+        self.error = None;
+        self.show_access_errors = true;
+        if let Some(error) = self.repository_validation_error() {
+            self.repository_error = Some(error);
+            return Action::None;
+        }
+        self.token_invalid = !valid_token(self.draft.token.trim());
+        if self.token_invalid {
+            return Action::None;
+        }
+        if self.repository_access_changed() && !self.remote_access_confirmed {
+            if matches!(self.remote, Lookup::Running { .. }) {
+                self.save_after_lookup = true;
+                return Action::None;
+            }
+            if matches!(self.remote, Lookup::Pending) || self.access_denied() {
+                self.remote = Lookup::Pending;
+                self.save_after_lookup = true;
+                return Action::LookupBranches(Some(RemoteQuery::Head));
+            }
+        }
+        Action::Save(self.start_save())
+    }
+
     pub fn update(&mut self, message: Message, operation_idle: bool) -> Action {
         if self.saving {
             return Action::None;
@@ -293,33 +402,22 @@ impl State {
             Message::InputFocused => return Action::LookupBranches(None),
             Message::RepositoryBlurred => {
                 self.repository_error = self.repository_validation_error();
-                return Action::None;
+                return self.check_repository_access();
+            }
+            Message::TokenFocused => {
+                self.token_focused = true;
+                self.show_access_errors = false;
+                return Action::LookupBranches(None);
+            }
+            Message::TokenBlurred => {
+                self.token_focused = false;
+                self.token_invalid = !valid_token(self.draft.token.trim());
+                return self.check_repository_access();
             }
             Message::LoadRemoteBranches => {
                 return Action::LookupBranches(Some(RemoteQuery::Branches));
             }
-            Message::Save => {
-                if !self.can_save(operation_idle) || self.save_after_lookup {
-                    return Action::None;
-                }
-                self.error = None;
-                if let Some(error) = self.repository_validation_error() {
-                    self.repository_error = Some(error);
-                    return Action::None;
-                }
-                if !valid_token(self.draft.token.trim()) {
-                    self.error = Some(SaveError::Token);
-                    return Action::None;
-                }
-                if self.needs_lookup_to_save() {
-                    if matches!(self.remote, Lookup::Finished(Err(_))) {
-                        self.remote = Lookup::Pending;
-                    }
-                    self.save_after_lookup = true;
-                    return Action::LookupBranches(Some(RemoteQuery::Head));
-                }
-                return Action::Save(self.start_save());
-            }
+            Message::Save => return self.submit(operation_idle),
             _ => {}
         }
 
@@ -338,8 +436,7 @@ impl State {
                     repository.as_deref().unwrap_or_default(),
                 ) {
                     self.local = Lookup::Pending;
-                    self.remote = Lookup::Pending;
-                    self.branch_names.clear();
+                    self.reset_remote_lookup();
                     if std::mem::take(&mut self.auto_branch) {
                         self.draft.branch.clear();
                     }
@@ -349,12 +446,10 @@ impl State {
                 self.draft.repository = value;
             }
             Message::TokenChanged(value) => {
-                if value.trim() != self.draft.token.trim()
-                    && !matches!(self.remote, Lookup::Pending)
-                {
-                    self.remote = Lookup::Pending;
-                    self.update_branch_names();
+                if value.trim() != self.draft.token.trim() {
+                    self.reset_remote_lookup();
                 }
+                self.token_invalid = false;
                 self.draft.token = value;
             }
             Message::PathChanged(value) => {
@@ -367,6 +462,8 @@ impl State {
             }
             Message::FlakeDirectoryChanged(value) => self.draft.flake_directory = value.into(),
             Message::RepositoryBlurred
+            | Message::TokenFocused
+            | Message::TokenBlurred
             | Message::InputFocused
             | Message::LoadRemoteBranches
             | Message::Cancel
@@ -386,55 +483,65 @@ impl State {
 
     fn panel<'a>(&'a self, i18n: &'a I18n, operation_idle: bool) -> Element<'a, Message> {
         let editing = !self.saving;
+        let on_focus = editing.then_some(Message::InputFocused);
         let submit =
             (self.can_save(operation_idle) && !self.save_after_lookup).then_some(Message::Save);
-        let (repository_error, footer_error) = match self.error {
-            Some(SaveError::Repository(error)) => (Some(error), None),
-            error => (self.repository_error, error),
-        };
+        let repository_status = self
+            .repository_error
+            .map(|error| (i18n.text(repository_error_hint(error)), colors::DANGER))
+            .or_else(|| self.repository_access_status(i18n));
         let repository = text_input(
             &i18n.text("settings-repository-placeholder"),
             &self.draft.repository,
         )
-        .invalid(repository_error.is_some())
+        .invalid(
+            repository_status
+                .as_ref()
+                .is_some_and(|(_, color)| *color == colors::DANGER),
+        )
         .on_input_maybe(editing.then_some(Message::RepositoryChanged))
         .on_submit_maybe(submit.clone());
         let mut repository = field(
             i18n.text("settings-repository"),
-            RepositoryInput::new(repository, false)
+            RepositoryInput::new(repository, None)
                 .on_blur(Message::RepositoryBlurred)
                 .into_element(),
         );
-        if let Some(error) = repository_error {
-            repository = repository.push(
-                text(error_text(i18n, SaveError::Repository(error)))
-                    .size(13)
-                    .color(colors::DANGER),
-            );
+        if let Some((message, color)) = repository_status {
+            repository = repository.push(text(message).size(13).color(color));
         }
+        let token_error = if self.token_invalid {
+            Some("settings-token-invalid-hint")
+        } else if self.access_feedback_visible()
+            && matches!(
+                self.remote,
+                Lookup::Finished(Err(RemoteBranchesError::Authentication))
+            )
+        {
+            Some("settings-token-rejected-hint")
+        } else {
+            None
+        };
         let token = text_input("", &self.draft.token)
             .secure(true)
+            .invalid(token_error.is_some())
             .on_input_maybe(editing.then_some(Message::TokenChanged))
             .on_submit_maybe(submit.clone());
-        let mut token = field(
+        let token = field(
             i18n.text("settings-token"),
-            RepositoryInput::new(token, editing).into_element(),
+            RepositoryInput::new(token, editing.then_some(Message::TokenFocused))
+                .on_blur(Message::TokenBlurred)
+                .into_element(),
         )
         .push(
-            text(i18n.text("settings-token-hint"))
+            text(i18n.text(token_error.unwrap_or("settings-token-hint")))
                 .size(13)
-                .color(colors::TEXT_MUTED),
+                .color(if token_error.is_some() {
+                    colors::DANGER
+                } else {
+                    colors::TEXT_MUTED
+                }),
         );
-        if matches!(
-            self.remote,
-            Lookup::Finished(Err(RemoteBranchesError::Unavailable))
-        ) {
-            token = token.push(
-                text(i18n.text("settings-repository-unavailable"))
-                    .size(13)
-                    .color(colors::DANGER),
-            );
-        }
         let mut path_args = FluentArgs::new();
         path_args.set("path", DEFAULT_REPO_PATH);
         let path = text_input(
@@ -450,7 +557,8 @@ impl State {
         )
         .on_input_maybe(branch_editing.then_some(Message::BranchChanged))
         .on_submit_maybe(submit.clone());
-        let mut branch_input = RepositoryInput::new(branch, branch_editing);
+        let mut branch_input =
+            RepositoryInput::new(branch, branch_editing.then_some(Message::InputFocused));
         if branch_editing && self.git_available {
             branch_input =
                 branch_input.branches(&self.draft.branch, &self.branch_names, self.auto_branch);
@@ -480,12 +588,16 @@ impl State {
         );
         let branch_status = match &self.remote {
             Lookup::Running {
-                query: RemoteQuery::Head,
+                query: RemoteQuery::Branches,
                 ..
-            } => Some(("settings-branch-checking-remote", colors::INFO)),
-            Lookup::Running { .. } => Some(("settings-branch-loading-remote", colors::INFO)),
-            Lookup::Finished(Err(RemoteBranchesError::Network)) => {
+            } => Some(("settings-branch-loading-remote", colors::INFO)),
+            Lookup::Finished(Err(RemoteBranchesError::Network)) if self.remote_access_confirmed => {
                 Some(("settings-branch-network-warning", colors::WARNING))
+            }
+            Lookup::Finished(Err(
+                RemoteBranchesError::TimedOut(_) | RemoteBranchesError::Unavailable,
+            )) if self.remote_access_confirmed => {
+                Some(("settings-branch-unavailable-hint", colors::WARNING))
             }
             Lookup::Finished(Ok(remote))
                 if self.needs_head()
@@ -521,7 +633,7 @@ impl State {
             token,
             field(
                 i18n.text("settings-path"),
-                RepositoryInput::new(path, editing).into_element()
+                RepositoryInput::new(path, on_focus.clone()).into_element()
             )
             .push(
                 text(i18n.text("settings-path-hint"))
@@ -531,7 +643,7 @@ impl State {
             branch,
             field(
                 i18n.text("settings-flake-directory"),
-                RepositoryInput::new(flake_directory, editing).into_element(),
+                RepositoryInput::new(flake_directory, on_focus).into_element(),
             )
             .push(
                 text(i18n.text("settings-flake-directory-hint"))
@@ -544,7 +656,7 @@ impl State {
         let form = column![interface, repository].spacing(spacing::XL);
 
         let mut footer = Column::new().spacing(spacing::MD);
-        if let Some(error) = footer_error {
+        if let Some(error) = self.error {
             footer = footer.push(text(error_text(i18n, error)).size(14).color(colors::DANGER));
         }
         if !operation_idle {
@@ -686,15 +798,19 @@ fn field<'a>(label: String, input: impl Into<Element<'a, Message>>) -> Column<'a
     column![text(label).size(14), input.into()].spacing(spacing::SM)
 }
 
+fn repository_error_hint(error: RepositoryUrlError) -> &'static str {
+    match error {
+        RepositoryUrlError::InvalidUrl => "settings-repository-invalid-hint",
+        RepositoryUrlError::RequiresHttps => "settings-repository-https-hint",
+        RepositoryUrlError::InvalidDomain => "settings-repository-domain-hint",
+        RepositoryUrlError::InvalidPath => "settings-repository-path-hint",
+    }
+}
+
 fn error_text(i18n: &I18n, error: SaveError) -> String {
     match error {
-        SaveError::Repository(error) => i18n.text(match error {
-            RepositoryUrlError::InvalidUrl => "settings-repository-invalid-hint",
-            RepositoryUrlError::RequiresHttps => "settings-repository-https-hint",
-            RepositoryUrlError::InvalidDomain => "settings-repository-domain-hint",
-            RepositoryUrlError::InvalidPath => "settings-repository-path-hint",
-        }),
-        SaveError::Token => i18n.text("settings-error-token"),
+        SaveError::Repository(error) => i18n.text(repository_error_hint(error)),
+        SaveError::Token => i18n.text("settings-token-invalid-hint"),
         SaveError::Path => i18n.text("settings-error-path"),
         SaveError::Branch => i18n.text("settings-error-branch"),
         SaveError::FlakeDirectory => i18n.text("settings-error-flake-directory"),

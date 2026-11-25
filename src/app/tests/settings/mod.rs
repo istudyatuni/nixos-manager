@@ -16,6 +16,7 @@ use crate::{
 
 use super::support::{Labels, boot_with_cache, headless, layout};
 
+mod access;
 mod branches;
 
 #[tokio::test]
@@ -104,6 +105,12 @@ async fn settings_show_an_invalid_repository_url_under_the_field_on_blur() {
             message,
             Message::Settings(settings::Message::RepositoryBlurred)
         )));
+        assert!(
+            messages.iter().any(|message| matches!(
+                message,
+                Message::Settings(settings::Message::TokenFocused)
+            ))
+        );
         for message in messages {
             let _ = app.update(message);
         }
@@ -522,7 +529,12 @@ async fn middle_click_pastes_primary_into_editable_settings_fields() {
     let mut changes = repository.iter().filter(|message| {
         !matches!(
             message,
-            Settings(Repo::InputFocused | Repo::RepositoryBlurred)
+            Settings(
+                Repo::InputFocused
+                    | Repo::RepositoryBlurred
+                    | Repo::TokenFocused
+                    | Repo::TokenBlurred
+            )
         )
     });
     assert!(matches!(

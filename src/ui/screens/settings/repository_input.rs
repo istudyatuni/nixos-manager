@@ -28,7 +28,7 @@ const MENU_PADDING: Padding = Padding {
 };
 pub(super) struct RepositoryInput<'a> {
     input: TextInput<'a, Message>,
-    on_focus: bool,
+    on_focus: Option<Message>,
     on_blur: Option<Message>,
     suggestions: Option<Suggestions<'a>>,
     menu_style: menu::StyleFn<'a, Theme>,
@@ -67,7 +67,7 @@ impl State {
 }
 
 impl<'a> RepositoryInput<'a> {
-    pub(super) fn new(input: TextInput<'a, Message>, on_focus: bool) -> Self {
+    pub(super) fn new(input: TextInput<'a, Message>, on_focus: Option<Message>) -> Self {
         Self {
             input,
             on_focus,
@@ -272,8 +272,8 @@ impl Widget<Message, Theme, Renderer> for RepositoryInput<'_> {
         let focused = input_state(input).is_focused();
         if focused != was_focused {
             state.focused = focused;
-            if focused && self.on_focus {
-                shell.publish(Message::InputFocused);
+            if focused && let Some(message) = &self.on_focus {
+                shell.publish(message.clone());
             }
             if !focused {
                 if let Some(message) = &self.on_blur {

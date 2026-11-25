@@ -30,9 +30,12 @@ pub struct RemoteRefs {
     pub default_branch: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RemoteBranchesError {
     Network,
+    TimedOut(Duration),
+    AccessDenied,
+    Authentication,
     Unavailable,
 }
 
@@ -108,7 +111,7 @@ pub async fn remote_branches(
         git.arg("--reference-if-able").arg(reference);
     }
     git.args(["--", repository]).arg(directory.path());
-    run_ref_lookup(runner, &mut git).await?;
+    run_ref_lookup(runner, &mut git, !token.is_empty()).await?;
 
     let branches = read_branches(runner, directory.path())
         .await
@@ -134,6 +137,7 @@ pub async fn remote_head(
     let output = run_ref_lookup(
         runner,
         git.args(["ls-remote", "--symref", "--", repository, "HEAD"]),
+        !token.is_empty(),
     )
     .await?;
     Ok(RemoteRefs {
@@ -178,21 +182,53 @@ async fn ref_lookup_command(
 async fn run_ref_lookup(
     runner: &CommandRunner,
     git: &mut Command,
+    has_token: bool,
 ) -> Result<Vec<u8>, RemoteBranchesError> {
-    use RemoteBranchesError::{Network, Unavailable};
-    let output = tokio::time::timeout(Duration::from_secs(15), runner.output(git))
+    let timeout = Duration::from_secs(15);
+    let output = tokio::time::timeout(timeout, runner.output(git))
         .await
-        .map_err(|_| Network)?
-        .map_err(|_| Unavailable)?;
+        .map_err(|_| RemoteBranchesError::TimedOut(timeout))?
+        .map_err(|_| RemoteBranchesError::Unavailable)?;
     if !output.status.success() {
-        return Err(if remote_transport_failed(&output.stderr) {
-            Network
-        } else {
-            Unavailable
-        });
+        return Err(ref_lookup_error(&output.stderr, has_token));
     }
 
     Ok(output.stdout)
+}
+
+fn ref_lookup_error(stderr: &[u8], has_token: bool) -> RemoteBranchesError {
+    use RemoteBranchesError::{AccessDenied, Authentication, Network, Unavailable};
+
+    if remote_transport_failed(stderr) {
+        return Network;
+    }
+    let stderr = String::from_utf8_lossy(stderr);
+    for line in stderr.lines() {
+        let http_status = line
+            .strip_prefix("fatal: unable to access '")
+            .and_then(|detail| detail.split_once("': The requested URL returned error: "))
+            .map(|(_, status)| status.trim());
+        if line.starts_with("remote: Invalid username or token.")
+            || line.starts_with("fatal: Authentication failed for '")
+            || http_status == Some("401")
+        {
+            return if has_token {
+                Authentication
+            } else {
+                AccessDenied
+            };
+        }
+        if matches!(http_status, Some("403" | "404"))
+            || line == "remote: Repository not found."
+            || line.starts_with("fatal: repository '") && line.ends_with("' not found")
+            || !has_token
+                && line.starts_with("fatal: could not read Username for ")
+                && line.ends_with(": terminal prompts disabled")
+        {
+            return AccessDenied;
+        }
+    }
+    Unavailable
 }
 
 async fn alternate_for(runner: &CommandRunner, path: &Path) -> Option<PathBuf> {
@@ -265,7 +301,7 @@ fn remote_transport_failed(stderr: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_remote_head;
+    use super::{RemoteBranchesError, parse_remote_head, ref_lookup_error};
 
     #[test]
     fn reads_only_the_symbolic_head_of_the_remote() {
@@ -279,5 +315,43 @@ mod tests {
             None
         );
         assert_eq!(parse_remote_head(b""), None);
+    }
+
+    #[test]
+    fn classifies_only_explicit_git_diagnostics_as_access_failures() {
+        use RemoteBranchesError::{AccessDenied, Authentication, Network, Unavailable};
+
+        let cases: &[(&[u8], bool, RemoteBranchesError)] = &[
+            (b"remote: Repository not found.\n", true, AccessDenied),
+            (
+                b"fatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+                false,
+                AccessDenied,
+            ),
+            (
+                b"fatal: unable to access 'https://github.com/owner/repo/': The requested URL returned error: 403\n",
+                true,
+                AccessDenied,
+            ),
+            (
+                b"remote: Invalid username or token. Password authentication is not supported for Git operations.\n",
+                true,
+                Authentication,
+            ),
+            (
+                b"fatal: Authentication failed for 'https://github.com/owner/repo/'\n",
+                false,
+                AccessDenied,
+            ),
+            (
+                b"fatal: unable to access 'https://github.com/owner/repo/': Could not resolve host: github.com\n",
+                false,
+                Network,
+            ),
+            (b"fatal: could not create work tree dir\n", true, Unavailable),
+        ];
+        for &(stderr, has_token, expected) in cases {
+            assert_eq!(ref_lookup_error(stderr, has_token), expected);
+        }
     }
 }

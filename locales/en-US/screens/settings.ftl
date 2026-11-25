@@ -12,9 +12,20 @@ settings-repository-invalid-hint = Enter a valid URL
 settings-repository-https-hint = Enter an HTTPS link to a GitHub repository
 settings-repository-domain-hint = Enter a link with the github.com domain
 settings-repository-path-hint = Enter a link in the format https://github.com/owner/repo
+settings-repository-checking-hint = Checking repository access on GitHub…
+settings-repository-unavailable-anonymous-hint = The repository is inaccessible. Check the URL or enter a token
+settings-repository-unavailable-hint = The repository is inaccessible. Check the URL and token permissions
+settings-repository-network-hint = Could not connect to GitHub
+settings-repository-timeout-hint =
+    GitHub did not respond within { $seconds } { $seconds ->
+        [one] second
+       *[other] seconds
+    }
+settings-repository-check-failed-hint = Could not check repository access through Git
 settings-token = GitHub access token
 settings-token-hint = Optional for public repositories
-settings-repository-unavailable = The repository does not exist or is inaccessible. Enter a token.
+settings-token-invalid-hint = Enter a GitHub access token without spaces
+settings-token-rejected-hint = GitHub rejected the token. Check it or enter a new one
 settings-path = Local path
 settings-path-placeholder = { $path }
 settings-path-hint = The app synchronizes the local branch with GitHub and replaces commits that exist only on the local branch
@@ -24,9 +35,9 @@ settings-branch-load-remote = Show all branches from GitHub
 settings-branch-loading-remote = Loading branches from GitHub…
 settings-branch-loading-remote-tooltip = { settings-branch-loading-remote }
 settings-branch-loaded-remote-tooltip = Branches from GitHub are loaded
-settings-branch-checking-remote = Checking repository access on GitHub…
 settings-branch-loading-local = Loading branches from the local repository…
 settings-branch-network-warning = Could not connect to GitHub. Showing only local branches.
+settings-branch-unavailable-hint = Could not load branches from GitHub
 settings-branch-head-unavailable = Could not find the default branch. Enter a branch manually.
 settings-flake-directory = Subdirectory containing flake.nix
 settings-flake-directory-placeholder = (repository root)
@@ -35,7 +46,6 @@ settings-cancel = Cancel
 settings-save = Save
 settings-saving = Saving…
 settings-operation-in-progress = You can save settings once the current operation finishes.
-settings-error-token = Enter a GitHub access token without spaces.
 settings-error-path = Enter a valid local path.
 settings-error-branch = Enter a valid Git branch name.
 settings-error-flake-directory = Enter a relative path without “..” components.
