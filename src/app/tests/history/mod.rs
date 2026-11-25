@@ -7,6 +7,7 @@ use nixos_manager_apply_protocol::system::Target as SystemTarget;
 
 use crate::{
     app::Message,
+    config::Config,
     i18n::LanguagePreference,
     rebuild::history,
     ui::{
@@ -21,12 +22,20 @@ mod activation;
 mod removal;
 
 #[tokio::test]
-async fn build_history_shows_system_configurations_without_a_repository() {
+async fn build_history_menu_requires_a_repository_and_shows_system_configurations() {
     use crate::ui::style::{TOOLTIP_TEXT_SIZE, spacing};
 
     let mut app = boot_with_cache(Ok(None));
     let renderer = headless().await;
     let size = Size::new(800.0, 540.0);
+    let labels = layout(&mut app.view(), &renderer, size).2;
+    assert!(!labels.contains(icon::glyph("menu")));
+    assert!(labels.contains("Logs"));
+
+    app.config = Some(Config {
+        repository: "https://github.com/example/config".into(),
+        ..Config::default()
+    });
     let viewport = Rectangle::with_size(size);
     let click = [
         Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),

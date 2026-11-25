@@ -106,14 +106,7 @@ pub fn view<'a>(
 ) -> Element<'a, Message> {
     responsive(move |size| {
         let compact = size.width < COMPACT_WIDTH || size.height < COMPACT_HEIGHT;
-        let controls = controls(
-            i18n,
-            repository.as_ref(),
-            loading,
-            load_error,
-            rebuild.is_some_and(rebuild::Run::is_running),
-            state,
-        );
+        let controls = controls(i18n, repository.as_ref(), loading, load_error, state);
         let controls = container(controls).width(Fill).max_width(CARD_WIDTH);
         let mut journal = container(journal::view(i18n, rebuild, state))
             .width(Fill)
@@ -151,7 +144,6 @@ fn controls<'a>(
     repository: Option<&Repository<'_>>,
     loading: bool,
     load_error: bool,
-    rebuild_running: bool,
     state: &'a State,
 ) -> Element<'a, Message> {
     match repository {
@@ -174,10 +166,6 @@ fn controls<'a>(
                         .align_x(Center),
                 );
             }
-            if !loading {
-                content = content.push(actions_menu(i18n, state, !rebuild_running));
-            }
-
             container(content).center_x(Fill).into()
         }
     }
