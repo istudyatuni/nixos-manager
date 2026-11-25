@@ -394,9 +394,15 @@ async fn build_history_copies_paths_generations_and_build_details() {
                     &Rectangle::with_size(size),
                 );
             }
-            for message in messages {
-                let _ = app.update(message);
-            }
+            let writes: usize = messages
+                .into_iter()
+                .map(|message| app.update(message).units())
+                .sum();
+            let selected_all = event == shortcut("a", keyboard::key::Code::KeyA);
+            assert_eq!(
+                writes,
+                usize::from(cfg!(target_os = "linux") && selected_all)
+            );
         }
         let copied = clipboard.0.expect("copied selected text");
         if fragments == [store_path] {

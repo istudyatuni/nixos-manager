@@ -1,4 +1,4 @@
-use iced::Task;
+use iced::{Task, clipboard};
 
 use crate::{
     rebuild::{self, history},
@@ -87,6 +87,7 @@ impl App {
             can_remove_generations,
         ) {
             build_history::Action::None => Task::none(),
+            build_history::Action::CopyPrimary(text) => clipboard::write_primary(text),
             build_history::Action::Close => {
                 self.screen = Screen::Overview;
                 Task::none()

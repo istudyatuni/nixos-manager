@@ -233,6 +233,17 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for TextInput<'_, Message>
                 native::cursor::State::Selection { start, end } => state.select_range(start, end),
             }
             shell.request_redraw();
+        } else if cfg!(target_os = "linux") && !self.secure && commit.is_none() {
+            let cursor = inner.state.downcast_ref::<InputState>().cursor();
+            if cursor != cursor_before {
+                let value = native::Value::new(&history.value);
+                if let Some((start, end)) = cursor.selection(&value) {
+                    clipboard.write(
+                        clipboard::Kind::Primary,
+                        value.select(start, end).to_string(),
+                    );
+                }
+            }
         }
         let history = RefCell::new(history);
         shell.merge(input_shell, |message| match message {

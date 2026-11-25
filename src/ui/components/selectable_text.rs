@@ -23,6 +23,28 @@ pub fn view<'a, Message: Clone + 'a>(
     editor(content, font, size, color, on_action).into()
 }
 
+pub fn perform(content: &mut Content, action: Action) -> Option<String> {
+    if action.is_edit() {
+        return None;
+    }
+
+    let selects_text = matches!(
+        action,
+        Action::Select(_)
+            | Action::SelectWord
+            | Action::SelectLine
+            | Action::SelectAll
+            | Action::Drag(_)
+    );
+    content.perform(action);
+
+    if cfg!(target_os = "linux") && selects_text {
+        content.selection().filter(|text| !text.is_empty())
+    } else {
+        None
+    }
+}
+
 /// A selectable label that shrinks to its text so it can be centered by its parent.
 pub struct Label {
     content: Content,
@@ -59,8 +81,8 @@ impl Label {
         .ceil();
     }
 
-    pub fn perform(&mut self, action: Action) {
-        self.content.perform(action);
+    pub fn perform(&mut self, action: Action) -> Option<String> {
+        perform(&mut self.content, action)
     }
 
     pub fn view<'a, Message: Clone + 'a>(

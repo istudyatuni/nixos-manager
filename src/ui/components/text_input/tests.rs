@@ -9,6 +9,71 @@ use iced::{
 
 use super::{input_state, text_input};
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn keyboard_selection_copies_visible_text_to_primary() {
+    #[derive(Default)]
+    struct PrimaryClipboard(Option<String>);
+
+    impl clipboard::Clipboard for PrimaryClipboard {
+        fn read(&self, kind: clipboard::Kind) -> Option<String> {
+            assert_eq!(kind, clipboard::Kind::Primary);
+            self.0.clone()
+        }
+
+        fn write(&mut self, kind: clipboard::Kind, contents: String) {
+            assert_eq!(kind, clipboard::Kind::Primary);
+            self.0 = Some(contents);
+        }
+    }
+
+    let renderer = <Renderer as Headless>::new(Font::DEFAULT, Pixels(16.0), Some("tiny-skia"))
+        .await
+        .expect("software renderer");
+    let viewport = Rectangle::with_size(Size::new(400.0, 60.0));
+    let home = keyboard::Key::Named(key::Named::Home);
+    for secure in [false, true] {
+        let mut view: Element<'_, String> = text_input("", "e\u{301}жX")
+            .secure(secure)
+            .on_input_maybe(Some(|value| value))
+            .into();
+        let widget = view.as_widget_mut();
+        let mut tree = Tree::new(&*widget);
+        input_state(&mut tree).focus();
+        input_state(&mut tree).move_cursor_to(2);
+        let node = widget.layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, viewport.size()),
+        );
+        let mut clipboard = PrimaryClipboard::default();
+        for event in [
+            Event::Keyboard(keyboard::Event::ModifiersChanged(Modifiers::SHIFT)),
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key: home.clone(),
+                modified_key: home.clone(),
+                physical_key: key::Physical::Code(key::Code::Home),
+                location: keyboard::Location::Standard,
+                modifiers: Modifiers::SHIFT,
+                text: None,
+                repeat: false,
+            }),
+        ] {
+            widget.update(
+                &mut tree,
+                &event,
+                Layout::new(&node),
+                mouse::Cursor::Unavailable,
+                &renderer,
+                &mut clipboard,
+                &mut Shell::new(&mut Vec::new()),
+                &viewport,
+            );
+        }
+        assert_eq!(clipboard.0.as_deref(), (!secure).then_some("e\u{301}ж"));
+    }
+}
+
 #[tokio::test]
 async fn undo_and_redo_restore_text_and_selection_in_a_masked_input() {
     let renderer = <Renderer as Headless>::new(Font::DEFAULT, Pixels(16.0), Some("tiny-skia"))

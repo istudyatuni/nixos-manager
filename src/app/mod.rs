@@ -312,7 +312,10 @@ impl App {
             }
             Message::Overview(overview::Message::ClearJournal) => self.overview.clear_journal(),
             Message::Overview(overview::Message::SelectText(target, action)) => {
-                self.overview.update_selection(target, action);
+                return self
+                    .overview
+                    .update_selection(target, action)
+                    .map_or_else(Task::none, clipboard::write_primary);
             }
             Message::CommandLogs(lines) => {
                 let generation = self.commands.generation();

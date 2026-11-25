@@ -58,6 +58,7 @@ pub enum Action {
     Refresh,
     Activate(ReadyTarget),
     Remove(Vec<Removal>),
+    CopyPrimary(String),
 }
 
 #[derive(Default)]
@@ -142,7 +143,7 @@ impl State {
                 self.removal_error = None;
                 return Action::Remove(self.marked.clone());
             }
-            Message::SelectText(target, action) if !action.is_edit() => {
+            Message::SelectText(target, action) => {
                 let (details, field) = match target {
                     TextTarget::Row(row, field) => {
                         (self.rows.get_mut(row).map(|row| &mut row.details), field)
@@ -151,8 +152,10 @@ impl State {
                         (self.selection.as_mut().map(|(_, details)| details), field)
                     }
                 };
-                if let Some(content) = details.and_then(|details| details.text_mut(field)) {
-                    content.perform(action);
+                if let Some(content) = details.and_then(|details| details.text_mut(field))
+                    && let Some(text) = selectable_text::perform(content, action)
+                {
+                    return Action::CopyPrimary(text);
                 }
             }
             _ => {}

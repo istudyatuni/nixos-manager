@@ -50,21 +50,13 @@ impl Default for State {
 }
 
 impl State {
-    pub fn update_selection(&mut self, target: Target, action: Action) {
-        if action.is_edit() {
-            return;
-        }
-
+    pub fn update_selection(&mut self, target: Target, action: Action) -> Option<String> {
         match target {
             Target::WorkingCopy => self.working_copy.perform(action),
-            Target::PendingCheckout => {
-                if let Some(label) = &mut self.pending_checkout {
-                    label.perform(action);
-                }
-            }
-            Target::RebuildError => self.rebuild_error.perform(action),
-            Target::DownloadError => self.download_error.perform(action),
-            Target::DownloadDetail => self.download_detail.perform(action),
+            Target::PendingCheckout => self.pending_checkout.as_mut()?.perform(action),
+            Target::RebuildError => selectable_text::perform(&mut self.rebuild_error, action),
+            Target::DownloadError => selectable_text::perform(&mut self.download_error, action),
+            Target::DownloadDetail => selectable_text::perform(&mut self.download_detail, action),
         }
     }
 

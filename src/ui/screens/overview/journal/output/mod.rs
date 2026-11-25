@@ -141,6 +141,9 @@ impl Widget<Message, Theme, Renderer> for View<'_> {
                     .select_at(bounds, *viewport, point, true);
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                if state.dragging {
+                    copy_primary(&self.output.log.borrow(), clipboard);
+                }
                 state.dragging = false;
                 return;
             }
@@ -159,7 +162,10 @@ impl Widget<Message, Theme, Renderer> for View<'_> {
                         shell.capture_event();
                         return;
                     }
-                    Some('a') if modifiers.command() => log.select_all(),
+                    Some('a') if modifiers.command() => {
+                        log.select_all();
+                        copy_primary(&log, clipboard);
+                    }
                     _ if key.as_ref() == Key::Named(Named::Escape) => {
                         *state = Interaction::default();
                     }
@@ -185,5 +191,73 @@ impl Widget<Message, Theme, Renderer> for View<'_> {
         } else {
             mouse::Interaction::None
         }
+    }
+}
+
+fn copy_primary(log: &Log, clipboard: &mut dyn Clipboard) {
+    if cfg!(target_os = "linux")
+        && let Some(text) = log.copy_selection()
+    {
+        clipboard.write(clipboard::Kind::Primary, text);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use iced::{Font, Pixels, Point, advanced::renderer::Headless};
+
+    use super::*;
+
+    #[derive(Default)]
+    struct PrimaryClipboard(Option<String>);
+
+    impl Clipboard for PrimaryClipboard {
+        fn read(&self, _kind: clipboard::Kind) -> Option<String> {
+            None
+        }
+
+        fn write(&mut self, kind: clipboard::Kind, contents: String) {
+            assert_eq!(kind, clipboard::Kind::Primary);
+            self.0 = Some(contents);
+        }
+    }
+
+    #[tokio::test]
+    async fn releasing_a_multiline_log_selection_copies_it_to_primary() {
+        let renderer = <Renderer as Headless>::new(Font::DEFAULT, Pixels(16.0), Some("tiny-skia"))
+            .await
+            .expect("software renderer");
+        let mut output = Output::default();
+        output.append(["first line", "second line"].map(|line| LogLine {
+            generation: 0,
+            text: line.to_owned(),
+            is_command: false,
+        }));
+
+        let mut view = output.view();
+        let widget = view.as_widget_mut();
+        let mut tree = Tree::new(&*widget);
+        let size = Size::new(400.0, 100.0);
+        let node = widget.layout(&mut tree, &renderer, &layout::Limits::new(Size::ZERO, size));
+        let start = Point::new(spacing::MD + 1.0, spacing::MD + 1.0);
+        let end = Point::new(200.0, node.size().height - spacing::MD - 1.0);
+        let mut clipboard = PrimaryClipboard::default();
+        for (event, position) in [
+            (mouse::Event::ButtonPressed(mouse::Button::Left), start),
+            (mouse::Event::CursorMoved { position: end }, end),
+            (mouse::Event::ButtonReleased(mouse::Button::Left), end),
+        ] {
+            widget.update(
+                &mut tree,
+                &Event::Mouse(event),
+                Layout::new(&node),
+                mouse::Cursor::Available(position),
+                &renderer,
+                &mut clipboard,
+                &mut Shell::new(&mut Vec::new()),
+                &Rectangle::with_size(size),
+            );
+        }
+        assert_eq!(clipboard.0.as_deref(), Some("first line\nsecond line"));
     }
 }
