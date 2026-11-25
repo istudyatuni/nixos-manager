@@ -964,18 +964,7 @@ impl App {
 
     pub fn view(&self) -> Element<'_, Message> {
         let dialog = match &self.screen {
-            Screen::Overview => self.settings_menu_open.then(|| {
-                toolbar::settings_menu(
-                    [
-                        (self.i18n.text("app-open-settings"), Message::OpenSettings),
-                        (
-                            self.i18n.text("app-open-cache-settings"),
-                            Message::OpenCacheSettings,
-                        ),
-                    ],
-                    Message::DismissDialog,
-                )
-            }),
+            Screen::Overview => None,
             Screen::BuildHistory(state) => Some(
                 state
                     .view(
@@ -1035,8 +1024,17 @@ impl App {
         column![
             toolbar::view(
                 self.title(),
-                self.settings_menu_open,
                 (!self.loading).then_some(Message::OpenSettingsMenu),
+                self.settings_menu_open.then(|| {
+                    [
+                        (self.i18n.text("app-open-settings"), Message::OpenSettings),
+                        (
+                            self.i18n.text("app-open-cache-settings"),
+                            Message::OpenCacheSettings,
+                        ),
+                    ]
+                }),
+                Message::DismissDialog,
             ),
             content,
         ]

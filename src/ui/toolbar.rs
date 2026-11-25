@@ -1,10 +1,10 @@
 use iced::{
-    Center, Element, Fill, Padding, Right,
-    widget::{button, container, mouse_area, opaque, row, space, stack, text},
+    Center, Element, Fill, Right,
+    widget::{button, container, row, space, text},
 };
 
 use super::{
-    components::menu,
+    components::{menu, popup},
     style::{buttons, containers, spacing},
 };
 
@@ -14,9 +14,11 @@ const VERTICAL_PADDING: f32 = 10.0;
 
 pub fn view<'a, Message: Clone + 'a>(
     title: String,
-    menu_open: bool,
     open_menu: Option<Message>,
+    options: Option<[(String, Message); 2]>,
+    dismiss: Message,
 ) -> Element<'a, Message> {
+    let menu_open = options.is_some();
     let gear = button(
         text(SETTINGS_GEAR)
             .size(20)
@@ -30,9 +32,10 @@ pub fn view<'a, Message: Clone + 'a>(
     .padding(0)
     .style(move |theme, status| buttons::menu_trigger(theme, status, menu_open))
     .on_press_maybe(open_menu);
+    let settings_menu = popup::on_click(gear, options.map(menu::panel), dismiss, Right);
 
     container(
-        row![text(title).size(22), space().width(Fill), gear]
+        row![text(title).size(22), space().width(Fill), settings_menu]
             .align_y(Center)
             .spacing(spacing::LG),
     )
@@ -40,22 +43,4 @@ pub fn view<'a, Message: Clone + 'a>(
     .width(Fill)
     .style(containers::toolbar)
     .into()
-}
-
-pub fn settings_menu<'a, Message: Clone + 'a>(
-    options: [(String, Message); 2],
-    dismiss: Message,
-) -> Element<'a, Message> {
-    let menu = container(opaque(menu::panel(options)))
-        .width(Fill)
-        .height(Fill)
-        .align_x(Right)
-        .padding(Padding {
-            top: VERTICAL_PADDING + GEAR_SIZE + spacing::SM,
-            right: spacing::PAGE_PADDING,
-            bottom: 0.0,
-            left: spacing::PAGE_PADDING,
-        });
-    let backdrop = mouse_area(space().width(Fill).height(Fill)).on_press(dismiss);
-    stack![backdrop, menu].into()
 }

@@ -229,24 +229,43 @@ async fn toolbar_settings_menu_opens_both_dialogs_without_a_repository() {
     let mut app = boot_with_cache(Ok(None));
     let renderer = headless().await;
     let size = Size::new(800.0, 540.0);
+    let viewport = Rectangle::with_size(size);
     let click = |app: &App, point: Point| {
         let mut view = app.view();
         let (mut tree, node, _) = layout(&mut view, &renderer, size);
-
+        let root = Layout::new(&node);
+        let cursor = mouse::Cursor::Available(point);
+        let events = [
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+        ];
         let mut messages = Vec::new();
-        for event in [
-            mouse::Event::ButtonPressed(mouse::Button::Left),
-            mouse::Event::ButtonReleased(mouse::Button::Left),
-        ] {
-            view.as_widget_mut().update(
+        let widget = view.as_widget_mut();
+        if let Some(overlay) = widget.overlay(&mut tree, root, &renderer, &viewport, Vector::ZERO) {
+            let mut overlay = overlay::Nested::new(overlay);
+            let node = overlay.layout(&renderer, size);
+            for event in &events {
+                overlay.update(
+                    event,
+                    Layout::new(&node),
+                    cursor,
+                    &renderer,
+                    &mut clipboard::Null,
+                    &mut Shell::new(&mut messages),
+                );
+            }
+            return messages;
+        }
+        for event in &events {
+            widget.update(
                 &mut tree,
-                &Event::Mouse(event),
-                Layout::new(&node),
-                mouse::Cursor::Available(point),
+                event,
+                root,
+                cursor,
                 &renderer,
                 &mut clipboard::Null,
                 &mut Shell::new(&mut messages),
-                &Rectangle::with_size(size),
+                &viewport,
             );
         }
         messages
@@ -279,10 +298,31 @@ async fn toolbar_settings_menu_opens_both_dialogs_without_a_repository() {
         assert!(matches!(messages.as_slice(), [Message::OpenSettingsMenu]));
         let _ = app.update(messages.into_iter().next().unwrap());
 
-        let menu = layout(&mut app.view(), &renderer, size).2;
+        let menu = {
+            let mut view = app.view();
+            let (mut tree, node, background) = layout(&mut view, &renderer, size);
+            assert_eq!(background.bounds(&app.title()), closed.bounds(&app.title()));
+            let overlay = view
+                .as_widget_mut()
+                .overlay(
+                    &mut tree,
+                    Layout::new(&node),
+                    &renderer,
+                    &viewport,
+                    Vector::ZERO,
+                )
+                .expect("settings menu");
+            let mut overlay = overlay::Nested::new(overlay);
+            let node = overlay.layout(&renderer, size);
+            let mut labels = Labels::default();
+            overlay.operate(Layout::new(&node), &renderer, &mut labels);
+            labels
+        };
         let settings = menu.bounds(application_settings);
         assert!(gear.y + gear.height < settings.y);
         assert!(settings.y < menu.bounds(cache_settings).y);
+        let panel = menu.containers[0];
+        assert_eq!(panel.x + panel.width, gear.x + gear.width);
 
         let messages = click(&app, menu.bounds(label).center());
         assert_eq!(messages.len(), 1);

@@ -4,6 +4,7 @@ use iced::{
         Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer,
         widget::{Operation, Tree, tree},
     },
+    alignment::Horizontal,
     border, touch,
     widget::{container, space, text},
     window,
@@ -40,11 +41,13 @@ pub fn on_click<'a, Message: Clone + 'a>(
     trigger: impl Into<Element<'a, Message>>,
     panel: Option<Element<'a, Message>>,
     dismiss: Message,
+    alignment: Horizontal,
 ) -> Element<'a, Message> {
     Element::new(Anchored {
         trigger: trigger.into(),
         mode: Mode::Click(panel.as_ref().map(|_| dismiss)),
         panel: panel.unwrap_or_else(|| space().into()),
+        alignment,
     })
 }
 
@@ -57,6 +60,7 @@ fn on_hover<'a, Message: Clone + 'a>(
         trigger: trigger.into(),
         panel: panel.into(),
         mode: Mode::Hover,
+        alignment: Horizontal::Center,
     })
 }
 
@@ -74,6 +78,7 @@ struct Anchored<'a, Message> {
     trigger: Element<'a, Message>,
     panel: Element<'a, Message>,
     mode: Mode<Message>,
+    alignment: Horizontal,
 }
 
 impl<Message: Clone> Widget<Message, Theme, Renderer> for Anchored<'_, Message> {
@@ -227,6 +232,7 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for Anchored<'_, Message> 
             tree: &mut tree.children[1],
             anchor,
             behavior,
+            alignment: self.alignment,
         })))
     }
 }
@@ -241,6 +247,7 @@ struct Popup<'a, Message> {
     tree: &'a mut Tree,
     anchor: Rectangle,
     behavior: Behavior<'a, Message>,
+    alignment: Horizontal,
 }
 
 impl<Message: Clone> overlay::Overlay<Message, Theme, Renderer> for Popup<'_, Message> {
@@ -257,9 +264,10 @@ impl<Message: Clone> overlay::Overlay<Message, Theme, Renderer> for Popup<'_, Me
         } else {
             self.anchor.y - spacing::SM - size.height
         };
-        let x = match self.behavior {
-            Behavior::Click(_) => self.anchor.x,
-            Behavior::Hover(_) => self.anchor.center_x() - size.width / 2.0,
+        let x = match self.alignment {
+            Horizontal::Left => self.anchor.x,
+            Horizontal::Center => self.anchor.center_x() - size.width / 2.0,
+            Horizontal::Right => self.anchor.x + self.anchor.width - size.width,
         };
         let position = iced::Point::new(
             x.clamp(0.0, (bounds.width - size.width).max(0.0)),

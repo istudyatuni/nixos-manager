@@ -1,6 +1,6 @@
 use fluent_bundle::FluentArgs;
 use iced::{
-    Center, Color, Element, Fill, Font, Padding, Shrink,
+    Center, Color, Element, Fill, Font, Left, Padding, Shrink,
     widget::{button, checkbox, column, container, responsive, row, scrollable, text, text_editor},
 };
 use std::{borrow::Cow, path::Path};
@@ -201,7 +201,7 @@ fn actions_menu<'a>(i18n: &I18n, state: &State, enabled: bool) -> Element<'a, Me
     .on_press_maybe(enabled.then_some(Message::OpenActionsMenu));
     let panel =
         open.then(|| menu::panel([(i18n.text("history-title"), Message::OpenBuildHistory)]));
-    popup::on_click(trigger, panel, Message::CloseActionsMenu)
+    popup::on_click(trigger, panel, Message::CloseActionsMenu, Left)
 }
 
 fn configured<'a>(
