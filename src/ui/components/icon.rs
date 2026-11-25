@@ -11,6 +11,7 @@ pub enum Icon {
     Copy,
     Trash,
     Stop,
+    ClearSelection,
 }
 
 impl<Message> Widget<Message, Theme, Renderer> for Icon {
@@ -73,6 +74,10 @@ impl<Message> Widget<Message, Theme, Renderer> for Icon {
                 draw(rect(6.0, 2.0, 4.0, 2.5), 0.75, false);
             }
             Self::Stop => draw(rect(3.0, 3.0, 10.0, 10.0), 1.0, false),
+            Self::ClearSelection => {
+                draw(rect(2.5, 2.5, 11.0, 11.0), 2.0, true);
+                draw(rect(5.0, (SIZE - STROKE) / 2.0, 6.0, STROKE), 0.5, false);
+            }
         }
     }
 }

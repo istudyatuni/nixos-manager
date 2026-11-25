@@ -1,8 +1,8 @@
 use fluent_bundle::FluentArgs;
 use iced::{
-    Center, Color, Element, Fill, Font, Shrink, padding,
+    Center, Color, Element, Fill, Font, Right, Shrink, padding,
     widget::{
-        button, column, container, mouse_area, row, rule, scrollable, space, text,
+        button, column, container, mouse_area, row, rule, scrollable, space, stack, text,
         text_editor::{self, Content},
         tooltip,
     },
@@ -34,6 +34,7 @@ pub enum Message {
     Back,
     Activate,
     ToggleRemoval(Removal),
+    ClearMarked,
     Remove,
     SelectText(TextTarget, text_editor::Action),
 }
@@ -132,6 +133,7 @@ impl State {
                     self.marked.push(removal);
                 }
             }
+            Message::ClearMarked if self.can_clear_marked() => self.marked.clear(),
             Message::Remove
                 if self.selection.is_none()
                     && self.can_remove(snapshot, can_remove_generations) =>
@@ -167,6 +169,10 @@ impl State {
 
     fn can_dismiss(&self) -> bool {
         !self.removing && self.marked.is_empty()
+    }
+
+    fn can_clear_marked(&self) -> bool {
+        self.selection.is_none() && !self.removing && !self.marked.is_empty()
     }
 
     fn system_marked(&self) -> bool {
@@ -307,22 +313,32 @@ fn list<'a>(
     ]
     .align_y(Center)
     .spacing(spacing::MD);
-    let actions = row![
-        container(
-            button(text(i18n.text(delete_label)).wrapping(text::Wrapping::WordOrGlyph))
-                .padding([7, 12])
-                .style(buttons::danger)
-                .on_press_maybe(
-                    state
-                        .can_remove(snapshot, missing_removal_tool.is_none())
-                        .then_some(Message::Remove),
-                ),
-        )
-        .width(Fill),
-        right_actions,
-    ]
-    .align_y(Center)
-    .spacing(spacing::MD);
+    let delete = button(text(i18n.text(delete_label)).wrapping(text::Wrapping::WordOrGlyph))
+        .padding([7, 12])
+        .style(buttons::danger)
+        .on_press_maybe(
+            state
+                .can_remove(snapshot, missing_removal_tool.is_none())
+                .then_some(Message::Remove),
+        );
+    let clear_marked = icon_button::view(
+        Icon::ClearSelection,
+        i18n.text("history-clear-selection"),
+        state.can_clear_marked().then_some(Message::ClearMarked),
+        buttons::secondary,
+    );
+    // Reserve the icon's full width before laying out the wrapping delete label.
+    let removal_actions = stack![
+        container(delete).padding(padding::right(icon_button::SIZE + spacing::MD)),
+        container(clear_marked)
+            .align_x(Right)
+            .align_y(Center)
+            .width(Fill)
+            .height(Fill),
+    ];
+    let actions = row![container(removal_actions).width(Fill), right_actions]
+        .align_y(Center)
+        .spacing(spacing::MD);
     let mut deletion_notices = column![].spacing(spacing::MD);
     if let Some(error) = state.removal_error {
         let key = match error {

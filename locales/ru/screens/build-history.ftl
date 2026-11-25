@@ -21,6 +21,7 @@ history-switch-warning = Конфигурация будет активна до
 history-mark-removal = Пометить к удалению
 history-unmark-removal = Снять отметку
 history-remove-selected = Удалить выбранные
+history-clear-selection = Снять выделение
 history-removing = Удаление…
 history-removal-boot-warning = Записи удалённых поколений могут оставаться в меню загрузчика. Чтобы обновить меню, включите «Добавить в загрузку» при следующей сборке.
 history-removal-changed = Выбранные сборки изменились. Проверьте обновлённый список.

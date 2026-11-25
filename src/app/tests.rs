@@ -1500,6 +1500,7 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
     enum Control {
         Trash,
         Remove,
+        Clear,
         Refresh,
         Backdrop,
         Close,
@@ -1539,11 +1540,28 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
             marked
         );
         let close = labels.bounds("×").center();
+        let clear = labels
+            .containers
+            .iter()
+            .copied()
+            .find(|bounds| {
+                bounds.size() == Size::new(34.0, 34.0)
+                    && bounds.x >= remove.x + remove.width
+                    && bounds.x + bounds.width <= refresh.x
+                    && (bounds.center_y() - refresh.center_y()).abs() < 1.0
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected clear-selection button between {remove:?} and {refresh:?} at {size:?}, found {:?}",
+                    labels.containers
+                )
+            });
         let mut controls: Vec<_> = labels
             .containers
             .into_iter()
             .filter(|bounds| {
                 bounds.size() == Size::new(34.0, 34.0)
+                    && *bounds != clear
                     && !bounds.contains(close)
                     && !bounds.contains(refresh.center())
             })
@@ -1555,6 +1573,7 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
         let position = match control {
             Control::Trash => trash.center(),
             Control::Remove => remove.center(),
+            Control::Clear => clear.center(),
             Control::Refresh => refresh.center(),
             Control::Backdrop => Point::new(size.width / 2.0, 4.0),
             Control::Close => close,
@@ -1580,7 +1599,7 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
             if matches!(
                 (control, event),
                 (
-                    Control::Trash | Control::Refresh,
+                    Control::Trash | Control::Clear | Control::Refresh,
                     mouse::Event::CursorMoved { .. }
                 )
             ) {
@@ -1598,6 +1617,7 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
         [Message::BuildHistory(build_history::Message::Refresh)]
     ));
     assert!(interact(&state, size, Control::Remove, false).is_empty());
+    assert!(interact(&state, size, Control::Clear, false).is_empty());
     for marked in [false, true, false] {
         let messages = interact(&state, size, Control::Backdrop, marked);
         if marked {
@@ -1651,6 +1671,12 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
         ),
         build_history::Action::None
     ));
+    let _ = state.update(
+        build_history::Message::ClearMarked,
+        Some(&snapshot),
+        false,
+        true,
+    );
     state.removal_finished(Err(rebuild::Error::Cancelled));
     state.set_snapshot(&app.i18n, &snapshot);
     let compact = Size::new(560.0 / 1.5, 170.0);
@@ -1658,6 +1684,26 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
         interact(&state, compact, Control::Remove, true).as_slice(),
         [Message::BuildHistory(build_history::Message::Remove)]
     ));
+    let messages = interact(&state, compact, Control::Clear, true);
+    let [Message::BuildHistory(message @ build_history::Message::ClearMarked)] =
+        messages.as_slice()
+    else {
+        panic!("expected a clear-selection message");
+    };
+    assert!(matches!(
+        state.update(message.clone(), Some(&snapshot), false, true),
+        build_history::Action::None
+    ));
+    assert!(interact(&state, compact, Control::Remove, false).is_empty());
+    assert!(matches!(
+        interact(&state, size, Control::Backdrop, false).as_slice(),
+        [Message::BuildHistory(build_history::Message::Dismiss)]
+    ));
+    let messages = interact(&state, size, Control::Trash, false);
+    let [Message::BuildHistory(message)] = messages.as_slice() else {
+        panic!("expected a removal toggle");
+    };
+    let _ = state.update(message.clone(), Some(&snapshot), false, true);
     snapshot.targets[0].system.generations = vec![42];
     state.set_snapshot(&app.i18n, &snapshot);
     assert!(matches!(

@@ -21,6 +21,7 @@ history-switch-warning = Activation lasts until reboot. On the next boot, the bo
 history-mark-removal = Mark for deletion
 history-unmark-removal = Unmark
 history-remove-selected = Delete Selected
+history-clear-selection = Clear selection
 history-removing = Deleting…
 history-removal-boot-warning = Deleted generations may still appear in the boot menu. To refresh the menu, turn on “Add to boot” on your next rebuild.
 history-removal-changed = The selected builds have changed. Check the refreshed list.

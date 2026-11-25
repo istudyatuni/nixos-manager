@@ -5,6 +5,8 @@ use iced::{
 
 use crate::ui::style::{buttons, containers, spacing};
 
+pub const SIZE: f32 = 34.0;
+
 pub fn close<'a, Message: Clone + 'a>(
     label: String,
     on_press: Option<Message>,
@@ -19,7 +21,7 @@ pub fn view<'a, Message: Clone + 'a>(
     style: fn(&Theme, button::Status) -> button::Style,
 ) -> Element<'a, Message> {
     tooltip(
-        button(container(icon).center(34))
+        button(container(icon).center(SIZE))
             .padding(0)
             .style(style)
             .on_press_maybe(on_press),
