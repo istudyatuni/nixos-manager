@@ -22,7 +22,7 @@ mod removal;
 
 #[tokio::test]
 async fn build_history_shows_system_configurations_without_a_repository() {
-    use crate::ui::style::spacing;
+    use crate::ui::style::{TOOLTIP_TEXT_SIZE, spacing};
 
     let mut app = boot_with_cache(Ok(None));
     let renderer = headless().await;
@@ -195,7 +195,9 @@ async fn build_history_shows_system_configurations_without_a_repository() {
                 "history-active-help" => {
                     assert!(tooltip_labels.containers[0].width < 240.0 + 2.0 * spacing::MD);
                 }
-                "history-system-profile-help" => assert!(tooltip_text.height > 26.0),
+                "history-system-profile-help" => {
+                    assert!(tooltip_text.height > 2.0 * TOOLTIP_TEXT_SIZE);
+                }
                 _ => {}
             }
             tooltip_text

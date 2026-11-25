@@ -17,7 +17,7 @@ use crate::{
     ui::{
         components::{icon, icon_button, popup, selectable_text},
         modal,
-        style::{buttons, colors, containers, spacing},
+        style::{TOOLTIP_TEXT_SIZE, buttons, colors, containers, spacing},
     },
 };
 
@@ -302,7 +302,7 @@ fn list<'a>(
             .on_enter(Message::HoverRollback(true))
             .on_exit(Message::HoverRollback(false)),
         text(rollback_tooltip)
-            .size(13)
+            .size(TOOLTIP_TEXT_SIZE)
             .wrapping(text::Wrapping::WordOrGlyph),
         tooltip::Position::Top,
     )

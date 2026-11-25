@@ -11,7 +11,7 @@ use iced::{
 };
 
 use super::icon;
-use crate::ui::style::{colors, containers, spacing};
+use crate::ui::style::{TOOLTIP_TEXT_SIZE, colors, containers, spacing};
 
 pub fn help<'a, Message: Clone + 'a>(description: String) -> Element<'a, Message> {
     const ICON_SIZE: f32 = 16.0;
@@ -24,7 +24,7 @@ pub fn help<'a, Message: Clone + 'a>(description: String) -> Element<'a, Message
         container(icon).center(ICON_SIZE),
         container(
             text(description)
-                .size(13)
+                .size(TOOLTIP_TEXT_SIZE)
                 .wrapping(text::Wrapping::WordOrGlyph),
         )
         .padding(spacing::MD)

@@ -4,7 +4,7 @@ use iced::{
 };
 
 use super::icon;
-use crate::ui::style::{buttons, containers, spacing};
+use crate::ui::style::{TOOLTIP_TEXT_SIZE, buttons, containers, spacing};
 
 pub const SIZE: f32 = 34.0;
 
@@ -26,7 +26,7 @@ pub fn view<'a, Message: Clone + 'a>(
             .padding(0)
             .style(style)
             .on_press_maybe(on_press),
-        text(label).size(13),
+        text(label).size(TOOLTIP_TEXT_SIZE),
         tooltip::Position::Top,
     )
     .gap(spacing::SM)

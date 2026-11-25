@@ -9,6 +9,8 @@ pub mod spacing;
 
 use iced::{Theme, theme::Palette};
 
+pub const TOOLTIP_TEXT_SIZE: f32 = 13.0;
+
 pub fn theme() -> Theme {
     Theme::custom(
         "NixOS Update",
