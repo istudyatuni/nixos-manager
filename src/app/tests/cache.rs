@@ -55,7 +55,7 @@ async fn cache_settings_show_the_expiration_and_actions_in_order() {
             labels.bounds(&app.i18n.text("cache-settings-config-details")),
             update,
             labels.bounds(&forget),
-            labels.bounds(&app.i18n.text("cache-settings-forget-hint")),
+            labels.bounds(&app.i18n.text("cache-settings-forget-description")),
             labels.bounds(&app.i18n.text("cache-settings-files")),
             forget_button,
         ];

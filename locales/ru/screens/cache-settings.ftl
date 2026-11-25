@@ -1,6 +1,6 @@
 cache-settings-url = URL сервера
 cache-settings-server-name = Локальное имя сервера
-cache-settings-server-hint = Attic использует это имя как локальный псевдоним для адреса.
+cache-settings-server-hint = Attic использует это имя как локальный псевдоним для адреса
 cache-settings-token = Токен
 cache-settings-token-hint = Токеном управляет Attic. Поле предназначено для ввода нового токена.
 cache-settings-cache-name = Имя кеша
@@ -17,7 +17,7 @@ cache-settings-update = Обновить кеш
 cache-settings-forget = Забыть настройки кеша
 cache-settings-forget-confirm = Забыть настройки кеша?
 cache-settings-cancel = Отмена
-cache-settings-forget-hint = Действие удаляет сведения о кеше из приложения. Настройки Attic и Nix управляются отдельно.
+cache-settings-forget-description = Действие удаляет сведения о кеше из приложения. Настройки Attic и Nix управляются отдельно.
 cache-settings-config-changes = Это изменит пользовательские настройки Attic и Nix.
 cache-settings-config-details = Подключение может заменить токен для этого хоста и меняет сервер Attic по умолчанию. При смене кеша старые записи в nix.conf могут требовать ручной очистки.
 cache-settings-files = Attic хранит настройки сервера и токен в attic/config.toml, а настройки Nix для кеша — в nix/nix.conf и nix/netrc. Эти файлы находятся в $XDG_CONFIG_HOME (обычно ~/.config).

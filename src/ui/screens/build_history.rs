@@ -272,13 +272,19 @@ fn list<'a>(
         "history-remove-selected"
     };
     let rollback = snapshot.and_then(|snapshot| snapshot.quick_rollback.as_ref());
-    let rollback_hint = match (snapshot, rollback, missing_tool) {
-        (None, _, _) => i18n.text("history-loading"),
-        (Some(snapshot), _, _) if snapshot.unavailable => i18n.text("history-unavailable"),
-        (_, None, _) => i18n.text("history-quick-rollback-no-target"),
-        _ if state.removing => i18n.text("history-removing"),
-        (_, _, Some(program)) => missing_tool_message(i18n, program),
-        _ => i18n.text("history-quick-rollback-help"),
+    let rollback_tooltip = match (snapshot, rollback, missing_tool) {
+        (None, _, _) => i18n.text("history-quick-rollback-loading-tooltip"),
+        (Some(snapshot), _, _) if snapshot.unavailable => {
+            i18n.text("history-quick-rollback-unavailable-tooltip")
+        }
+        (_, None, _) => i18n.text("history-quick-rollback-no-target-tooltip"),
+        _ if state.removing => i18n.text("history-quick-rollback-removing-tooltip"),
+        (_, _, Some(program)) => {
+            let mut args = FluentArgs::new();
+            args.set("program", program);
+            i18n.with_args("history-quick-rollback-tool-unavailable-tooltip", &args)
+        }
+        _ => i18n.text("history-quick-rollback-tooltip"),
     };
     let rollback_button = button(text(i18n.text("history-quick-rollback")))
         .padding([7, 12])
@@ -295,7 +301,7 @@ fn list<'a>(
         mouse_area(rollback_button)
             .on_enter(Message::HoverRollback(true))
             .on_exit(Message::HoverRollback(false)),
-        text(rollback_hint)
+        text(rollback_tooltip)
             .size(13)
             .wrapping(text::Wrapping::WordOrGlyph),
         tooltip::Position::Top,
@@ -305,7 +311,7 @@ fn list<'a>(
     let right_actions = row![
         icon_button::view(
             icon::refresh(),
-            i18n.text("history-refresh-help"),
+            i18n.text("history-refresh-tooltip"),
             (snapshot.is_some() && !state.removing).then_some(Message::Refresh),
             buttons::secondary,
         ),

@@ -141,7 +141,11 @@ impl State {
         let forget_label = i18n.text("cache-settings-forget");
         column![
             text(forget_label.clone()).size(17),
-            note(i18n, "cache-settings-forget-hint", colors::TEXT_MUTED),
+            note(
+                i18n,
+                "cache-settings-forget-description",
+                colors::TEXT_MUTED
+            ),
             note(i18n, "cache-settings-files", colors::TEXT_MUTED),
             row![
                 guide,
@@ -310,8 +314,12 @@ impl State {
 fn forget_confirmation<'a>(i18n: &I18n) -> Element<'a, Message> {
     column![
         text(i18n.text("cache-settings-forget-confirm")).size(22),
-        note(i18n, "cache-settings-forget-hint", colors::TEXT_MUTED)
-            .wrapping(text::Wrapping::WordOrGlyph),
+        note(
+            i18n,
+            "cache-settings-forget-description",
+            colors::TEXT_MUTED
+        )
+        .wrapping(text::Wrapping::WordOrGlyph),
         row![
             space().width(Fill),
             button(text(i18n.text("cache-settings-cancel")))

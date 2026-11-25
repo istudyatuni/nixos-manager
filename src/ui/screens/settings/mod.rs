@@ -416,19 +416,19 @@ impl State {
             branch_input =
                 branch_input.branches(&self.draft.branch, &self.branch_names, self.auto_branch);
         }
-        let load_branches_label = match &self.remote {
+        let load_branches_tooltip = match &self.remote {
             Lookup::Running {
                 query: RemoteQuery::Branches,
                 ..
-            } => "settings-branch-loading-remote",
+            } => "settings-branch-loading-remote-tooltip",
             Lookup::Finished(Ok(refs)) if refs.branches.is_some() => {
-                "settings-branch-loaded-remote"
+                "settings-branch-loaded-remote-tooltip"
             }
             _ => "settings-branch-load-remote",
         };
         let load_branches = icon_button::view(
             icon::cloud_download(),
-            i18n.text(load_branches_label),
+            i18n.text(load_branches_tooltip),
             (editing && self.can_query_remote(RemoteQuery::Branches))
                 .then_some(Message::LoadRemoteBranches),
             buttons::secondary,

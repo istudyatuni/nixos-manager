@@ -1,6 +1,6 @@
 cache-settings-url = Server URL
 cache-settings-server-name = Local server name
-cache-settings-server-hint = Attic uses this name as a local alias for the server URL.
+cache-settings-server-hint = Attic uses this name as a local alias for the server URL
 cache-settings-token = Token
 cache-settings-token-hint = Attic manages the token. Use this field to enter a new token.
 cache-settings-cache-name = Cache name
@@ -17,7 +17,7 @@ cache-settings-update = Update cache
 cache-settings-forget = Forget cache settings
 cache-settings-forget-confirm = Forget cache settings?
 cache-settings-cancel = Cancel
-cache-settings-forget-hint = This clears cache details from the app. Attic and Nix settings are managed separately.
+cache-settings-forget-description = This clears cache details from the app. Attic and Nix settings are managed separately.
 cache-settings-config-changes = This will change your Attic and Nix user settings.
 cache-settings-config-details = Connecting can replace the token for this host and sets Attic’s default server. When switching caches, you may need to remove old entries from nix.conf manually.
 cache-settings-files = Attic keeps server settings and the token in attic/config.toml, and the Nix cache settings in nix/nix.conf and nix/netrc. These files are under $XDG_CONFIG_HOME (usually ~/.config).
