@@ -37,7 +37,7 @@ pub enum Message {
     BranchChanged(String),
     FlakeDirectoryChanged(String),
     InputFocused,
-    BranchPickerOpened,
+    LoadRemoteBranches,
     Cancel,
     BackdropPressed,
     Save,
@@ -164,30 +164,33 @@ impl State {
             }
     }
 
+    fn can_query_remote(&self, query: RemoteQuery) -> bool {
+        self.git_available
+            && self.repository.is_some()
+            && valid_token(self.draft.token.trim())
+            && match &self.remote {
+                Lookup::Pending => true,
+                Lookup::Running { query: running, .. } => {
+                    query == RemoteQuery::Branches && *running == RemoteQuery::Head
+                }
+                Lookup::Finished(Ok(refs)) => {
+                    query == RemoteQuery::Branches && refs.branches.is_none()
+                }
+                Lookup::Finished(Err(_)) => query == RemoteQuery::Branches,
+            }
+    }
+
     pub fn branch_lookup(&self, remote: Option<RemoteQuery>) -> Option<BranchLookup> {
         let repository = self.repository.as_ref()?;
-        let token = self.draft.token.trim();
         let check_local = matches!(self.local, Lookup::Pending);
-        let remote = remote.filter(|query| {
-            valid_token(token)
-                && match &self.remote {
-                    Lookup::Pending => true,
-                    Lookup::Running { query: running, .. } => {
-                        *query == RemoteQuery::Branches && *running == RemoteQuery::Head
-                    }
-                    Lookup::Finished(Ok(refs)) => {
-                        *query == RemoteQuery::Branches && refs.branches.is_none()
-                    }
-                    Lookup::Finished(Err(_)) => *query == RemoteQuery::Branches,
-                }
-        });
+        let remote = remote.filter(|query| self.can_query_remote(*query));
         if !self.git_available || (!check_local && remote.is_none()) {
             return None;
         }
         Some(BranchLookup {
             repository: repository.clone(),
             path: self.draft.path.clone(),
-            token: token.to_owned(),
+            token: self.draft.token.trim().to_owned(),
             check_local,
             remote,
         })
@@ -277,7 +280,7 @@ impl State {
                 };
             }
             Message::InputFocused => return Action::LookupBranches(None),
-            Message::BranchPickerOpened => {
+            Message::LoadRemoteBranches => {
                 return Action::LookupBranches(Some(RemoteQuery::Branches));
             }
             Message::Save => {
@@ -344,7 +347,7 @@ impl State {
             }
             Message::FlakeDirectoryChanged(value) => self.draft.flake_directory = value.into(),
             Message::InputFocused
-            | Message::BranchPickerOpened
+            | Message::LoadRemoteBranches
             | Message::Cancel
             | Message::BackdropPressed
             | Message::Save => unreachable!(),
@@ -413,7 +416,29 @@ impl State {
             branch_input =
                 branch_input.branches(&self.draft.branch, &self.branch_names, self.auto_branch);
         }
-        let mut branch = field(i18n.text("settings-branch"), branch_input.into_element());
+        let load_branches_label = match &self.remote {
+            Lookup::Running {
+                query: RemoteQuery::Branches,
+                ..
+            } => "settings-branch-loading-remote",
+            Lookup::Finished(Ok(refs)) if refs.branches.is_some() => {
+                "settings-branch-loaded-remote"
+            }
+            _ => "settings-branch-load-remote",
+        };
+        let load_branches = icon_button::view(
+            icon::cloud_download(),
+            i18n.text(load_branches_label),
+            (editing && self.can_query_remote(RemoteQuery::Branches))
+                .then_some(Message::LoadRemoteBranches),
+            buttons::secondary,
+        );
+        let mut branch = field(
+            i18n.text("settings-branch"),
+            row![branch_input.into_element(), load_branches]
+                .align_y(Center)
+                .spacing(spacing::SM),
+        );
         let branch_status = match &self.remote {
             Lookup::Running {
                 query: RemoteQuery::Head,

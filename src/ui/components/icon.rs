@@ -8,8 +8,8 @@ mod lucide {
 }
 
 pub use lucide::{
-    FONT, chevron_down, chevron_up, clear_selection, close, copy, help, menu, play, refresh,
-    settings, stop, trash,
+    FONT, chevron_down, chevron_up, clear_selection, close, cloud_download, copy, help, menu, play,
+    refresh, settings, stop, trash,
 };
 
 pub const TYPEFACE: Font = Font::with_name("lucide");

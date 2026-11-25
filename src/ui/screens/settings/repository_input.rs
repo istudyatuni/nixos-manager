@@ -219,7 +219,6 @@ impl Widget<Message, Theme, Renderer> for RepositoryInput<'_> {
                 state.show(MenuMode::Closed);
             } else {
                 state.show(MenuMode::All);
-                shell.publish(Message::BranchPickerOpened);
             }
             true
         } else if let Some((key, _)) = key
