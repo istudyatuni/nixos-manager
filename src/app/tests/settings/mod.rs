@@ -246,6 +246,109 @@ async fn escape_cancels_application_settings_after_dismissing_the_branch_picker(
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
+async fn selected_settings_text_can_be_pasted_into_another_field() {
+    struct PrimaryClipboard(String);
+
+    impl clipboard::Clipboard for PrimaryClipboard {
+        fn read(&self, kind: clipboard::Kind) -> Option<String> {
+            assert_eq!(kind, clipboard::Kind::Primary);
+            Some(self.0.clone())
+        }
+
+        fn write(&mut self, kind: clipboard::Kind, contents: String) {
+            assert_eq!(kind, clipboard::Kind::Primary);
+            self.0 = contents;
+        }
+    }
+
+    let mut app = boot_with_cache(Ok(None));
+    let path = "/tmp/repository";
+    app.config = Some(Config {
+        repository: "https://github.com/example/repository".into(),
+        path: path.into(),
+        ..Config::default()
+    });
+    let _ = app.update(Message::OpenSettings);
+    let renderer = headless().await;
+    let size = Size::new(800.0, 1000.0);
+    let mut view = app.view();
+    let (mut tree, node, labels) = layout(&mut view, &renderer, size);
+    let field = |label| {
+        let label = labels.bounds(label);
+        *labels
+            .inputs
+            .iter()
+            .find(|input| input.y > label.y)
+            .unwrap()
+    };
+    let source = field("Local path");
+    let target = field("Subdirectory containing flake.nix");
+    let start = Point::new(source.x + 2.0, source.center_y());
+    let end = source.center();
+    let mut dispatch = |event, point, clipboard: &mut PrimaryClipboard| {
+        let mut messages = Vec::new();
+        view.as_widget_mut().update(
+            &mut tree,
+            &event,
+            Layout::new(&node),
+            mouse::Cursor::Available(point),
+            &renderer,
+            clipboard,
+            &mut Shell::new(&mut messages),
+            &Rectangle::with_size(size),
+        );
+        messages
+    };
+    let mut clipboard = PrimaryClipboard(String::new());
+    for (event, position) in [
+        (mouse::Event::ButtonPressed(mouse::Button::Left), start),
+        (mouse::Event::CursorMoved { position: end }, end),
+        (mouse::Event::ButtonReleased(mouse::Button::Left), end),
+    ] {
+        dispatch(Event::Mouse(event), position, &mut clipboard);
+    }
+    assert_eq!(clipboard.0, path);
+
+    // Another application can claim PRIMARY while the local selection stays visible.
+    clipboard.0 = "external selection".into();
+    let ctrl = keyboard::Modifiers::CTRL;
+    dispatch(
+        Event::Keyboard(keyboard::Event::ModifiersChanged(ctrl)),
+        end,
+        &mut clipboard,
+    );
+    let key = keyboard::Key::Character("a".into());
+    dispatch(
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: keyboard::key::Physical::Code(keyboard::key::Code::KeyA),
+            location: keyboard::Location::Standard,
+            modifiers: ctrl,
+            text: None,
+            repeat: false,
+        }),
+        end,
+        &mut clipboard,
+    );
+    assert_eq!(clipboard.0, path);
+
+    let mut changes = dispatch(
+        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Middle)),
+        target.center(),
+        &mut clipboard,
+    )
+    .into_iter()
+    .filter(|message| !matches!(message, Message::Settings(settings::Message::InputFocused)));
+    assert!(matches!(
+        changes.next(),
+        Some(Message::Settings(settings::Message::FlakeDirectoryChanged(value))) if value == path
+    ));
+    assert!(changes.next().is_none());
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
 async fn middle_click_pastes_primary_into_editable_settings_fields() {
     #[derive(Default)]
     struct PrimaryClipboard(std::cell::Cell<usize>);
