@@ -18,7 +18,7 @@ use crate::{
     git::{self, Branch, RemoteBranchesError, RemoteRefs},
     i18n::{I18n, LanguagePreference},
     ui::{
-        components::{icon_button, text_input::text_input},
+        components::{icon, icon_button, text_input::text_input},
         modal,
         style::{buttons, colors, pick_lists, spacing},
     },
@@ -597,6 +597,7 @@ fn select_field<'a, T: Clone + PartialEq + 'a>(
     let width = 176;
     let control: Element<'_, Message> = if editing {
         pick_list(options, selected, move |option| on_select(option.value))
+            .handle(icon::pick_list_handle())
             .width(width)
             .text_size(15)
             .padding([8, 10])

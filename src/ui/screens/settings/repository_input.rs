@@ -2,7 +2,6 @@ use iced::{
     Element, Event, Length, Padding, Pixels, Rectangle, Renderer, Size, Theme, Vector,
     advanced::{
         Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer,
-        text::Renderer as _,
         widget::{Operation, Tree, tree},
     },
     keyboard::{Event::KeyPressed, Key::Named, key::Named as Key},
@@ -12,7 +11,10 @@ use iced::{
 
 use super::Message;
 use crate::ui::{
-    components::text_input::{State as InputState, TextInput},
+    components::{
+        icon,
+        text_input::{State as InputState, TextInput},
+    },
     style::pick_lists,
 };
 
@@ -80,9 +82,9 @@ impl<'a> RepositoryInput<'a> {
         auto_branch: bool,
     ) -> Self {
         self.input = self.input.icon(text_input::Icon {
-            font: Renderer::ICON_FONT,
-            code_point: Renderer::ARROW_DOWN_ICON,
-            size: Some(10.0.into()),
+            font: icon::TYPEFACE,
+            code_point: icon::code_point("chevron_down"),
+            size: Some(14.0.into()),
             spacing: 8.0,
             side: text_input::Side::Right,
         });

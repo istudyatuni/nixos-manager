@@ -5,24 +5,16 @@ use iced::{
         widget::{Operation, Tree, tree},
     },
     alignment::Horizontal,
-    border, touch,
+    touch,
     widget::{container, space, text},
     window,
 };
 
+use super::icon;
 use crate::ui::style::{colors, containers, spacing};
 
 pub fn help<'a, Message: Clone + 'a>(description: String) -> Element<'a, Message> {
-    const ICON_SIZE: f32 = 16.0;
-    let icon = container(text("?").size(11).color(colors::INFO))
-        .center(ICON_SIZE)
-        .style(|_| {
-            container::Style::default().border(
-                border::rounded(ICON_SIZE / 2.0)
-                    .width(1)
-                    .color(colors::INFO),
-            )
-        });
+    let icon = container(icon::help().size(16).color(colors::INFO)).center(16);
     on_hover(
         icon,
         container(

@@ -11,7 +11,7 @@ use crate::{
     i18n::I18n,
     rebuild,
     ui::{
-        components::{menu, popup},
+        components::{icon, menu, popup},
         style::{buttons, colors, containers, inputs, spacing},
     },
 };
@@ -26,7 +26,6 @@ const OUTPUT_WIDTH: f32 = CARD_WIDTH * 2.0;
 const COMPACT_WIDTH: f32 = 520.0;
 const COMPACT_HEIGHT: f32 = 400.0;
 const COMPACT_JOURNAL_HEIGHT: f32 = 224.0;
-const ACTIONS_ICON: &str = "☰";
 
 #[derive(Clone)]
 pub enum Message {
@@ -187,7 +186,7 @@ fn controls<'a>(
 fn actions_menu<'a>(i18n: &I18n, state: &State, enabled: bool) -> Element<'a, Message> {
     let open = state.actions_menu_open && enabled;
     let trigger = button(
-        text(ACTIONS_ICON)
+        icon::menu()
             .size(18)
             .width(Fill)
             .height(Fill)
@@ -237,6 +236,7 @@ fn configured<'a>(
         row![
             checkbox(steps.boot)
                 .label(i18n.text("overview-add-to-boot"))
+                .icon(icon::checkmark())
                 .size(16)
                 .spacing(spacing::MD)
                 .style(inputs::checkbox_style)
@@ -247,6 +247,7 @@ fn configured<'a>(
         .align_y(Center),
         checkbox(steps.activate)
             .label(i18n.text("overview-activate"))
+            .icon(icon::checkmark())
             .size(16)
             .spacing(spacing::MD)
             .style(inputs::checkbox_style)

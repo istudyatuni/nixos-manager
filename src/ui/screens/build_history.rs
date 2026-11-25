@@ -15,7 +15,7 @@ use crate::{
         history::{Build, Removal, Snapshot, Source, Target},
     },
     ui::{
-        components::{icon::Icon, icon_button, popup, selectable_text},
+        components::{icon, icon_button, popup, selectable_text},
         modal,
         style::{buttons, colors, containers, spacing},
     },
@@ -304,7 +304,7 @@ fn list<'a>(
     .style(containers::card);
     let right_actions = row![
         icon_button::view(
-            text("↻").size(20),
+            icon::refresh(),
             i18n.text("history-refresh-help"),
             (snapshot.is_some() && !state.removing).then_some(Message::Refresh),
             buttons::secondary,
@@ -322,7 +322,7 @@ fn list<'a>(
                 .then_some(Message::Remove),
         );
     let clear_marked = icon_button::view(
-        Icon::ClearSelection,
+        icon::clear_selection(),
         i18n.text("history-clear-selection"),
         state.can_clear_marked().then_some(Message::ClearMarked),
         buttons::secondary,
@@ -576,7 +576,7 @@ fn target_row<'a>(
                 ("history-mark-removal", buttons::secondary as _)
             };
             icon_button::view(
-                Icon::Trash,
+                icon::trash(),
                 i18n.text(label),
                 (can_toggle && (selected || target.can_mark(removal, marked)))
                     .then(|| Message::ToggleRemoval(removal.clone())),
@@ -586,7 +586,7 @@ fn target_row<'a>(
         (!target.system.active).then(|| {
             icon_button::view(
                 // Shift the triangle right to balance its wider left edge.
-                container(text("▶").size(14)).padding(padding::left(2)),
+                container(icon::play()).padding(padding::left(2)),
                 i18n.text("history-activate"),
                 can_activate.then(|| Message::Select {
                     target: ReadyTarget::Selected(target.store_path.clone()),

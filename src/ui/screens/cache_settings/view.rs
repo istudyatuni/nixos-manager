@@ -10,7 +10,7 @@ use crate::{
     attic::{self, FailureKind, Metadata, Stage, TokenError, ValidationError},
     i18n::I18n,
     ui::{
-        components::{icon_button, text_input::text_input},
+        components::{icon, icon_button, text_input::text_input},
         modal,
         style::{buttons, colors, pick_lists, spacing},
     },
@@ -194,6 +194,7 @@ impl State {
 
         let cache_input: Element<'_, Message> = if editing && !caches.is_empty() {
             pick_list(caches, selected, Message::CacheSelected)
+                .handle(icon::pick_list_handle())
                 .placeholder(i18n.text("cache-settings-select-cache"))
                 .width(Fill)
                 .text_size(15)

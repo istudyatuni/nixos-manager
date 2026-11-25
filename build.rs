@@ -1,4 +1,8 @@
-use std::{env, path::PathBuf, process::Command};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 fn main() {
     println!("cargo::rerun-if-changed=crates/nixos-manager-apply");
@@ -6,6 +10,9 @@ fn main() {
     println!("cargo::rerun-if-changed=Cargo.toml");
     println!("cargo::rerun-if-changed=Cargo.lock");
     println!("cargo::rerun-if-env-changed=NIXOS_MANAGER_PACKAGED");
+
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo output directory"));
+    build_icons(&out_dir);
 
     // The Nix package builds the workspace and installs the helper in libexec.
     if env::var_os("NIXOS_MANAGER_PACKAGED").is_some() {
@@ -18,8 +25,7 @@ fn main() {
     // https://github.com/rust-lang/cargo/issues/9096
     let target = env::var("TARGET").expect("Cargo target");
     let host = env::var("HOST").expect("Cargo host");
-    let target_dir =
-        PathBuf::from(env::var_os("OUT_DIR").expect("Cargo output directory")).join("apply-helper");
+    let target_dir = out_dir.join("apply-helper");
     let mut cargo = Command::new(env::var_os("CARGO").expect("Cargo executable"));
     cargo
         .args([
@@ -54,4 +60,16 @@ fn main() {
         "cargo::rustc-env=NIXOS_MANAGER_DEV_HELPER={}",
         binary.display()
     );
+}
+
+fn build_icons(out_dir: &Path) {
+    const CONFIG: &str = "static/icons.toml";
+    println!("cargo::rerun-if-changed={CONFIG}");
+
+    // iced_lucide writes relative to the working directory and the TOML file.
+    let source_dir = env::current_dir().expect("Cargo source directory");
+    fs::copy(CONFIG, out_dir.join("icons.toml")).expect("Stage icon configuration in OUT_DIR");
+    env::set_current_dir(out_dir).expect("Enter OUT_DIR");
+    iced_lucide::build("icons.toml").expect("Generate Lucide icons");
+    env::set_current_dir(source_dir).expect("Restore Cargo source directory");
 }

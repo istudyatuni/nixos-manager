@@ -3,6 +3,7 @@ use iced::{
     widget::{button, container, text, tooltip},
 };
 
+use super::icon;
 use crate::ui::style::{buttons, containers, spacing};
 
 pub const SIZE: f32 = 34.0;
@@ -11,7 +12,7 @@ pub fn close<'a, Message: Clone + 'a>(
     label: String,
     on_press: Option<Message>,
 ) -> Element<'a, Message> {
-    view(text("×").size(20), label, on_press, buttons::secondary)
+    view(icon::close(), label, on_press, buttons::secondary)
 }
 
 pub fn view<'a, Message: Clone + 'a>(

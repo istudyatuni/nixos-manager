@@ -1,0 +1,17 @@
+# Match the source module so iced_lucide's Cargo watch path exists in the source tree.
+module = "ui::components::icon"
+
+[icons]
+check = "check"
+chevron_down = "chevron-down"
+chevron_up = "chevron-up"
+clear_selection = "square-minus"
+close = "x"
+copy = "copy"
+help = "circle-question-mark"
+menu = "menu"
+play = "play"
+refresh = "refresh-cw"
+settings = "settings"
+stop = "square"
+trash = "trash-2"

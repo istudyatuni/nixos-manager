@@ -4,11 +4,10 @@ use iced::{
 };
 
 use super::{
-    components::{menu, popup},
+    components::{icon, menu, popup},
     style::{buttons, containers, spacing},
 };
 
-pub const SETTINGS_GEAR: &str = "⚙\u{fe0e}";
 const GEAR_SIZE: f32 = 36.0;
 const VERTICAL_PADDING: f32 = 10.0;
 
@@ -20,8 +19,8 @@ pub fn view<'a, Message: Clone + 'a>(
 ) -> Element<'a, Message> {
     let menu_open = options.is_some();
     let gear = button(
-        text(SETTINGS_GEAR)
-            .size(20)
+        icon::settings()
+            .size(18)
             .width(Fill)
             .height(Fill)
             .align_x(Center)

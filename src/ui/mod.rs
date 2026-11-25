@@ -3,3 +3,5 @@ pub mod modal;
 pub mod screens;
 pub mod style;
 pub mod toolbar;
+
+pub(crate) use components::icon;

@@ -1,7 +1,6 @@
 use fluent_bundle::FluentArgs;
 use iced::{
-    Center, Color, Element, Fill, Font, Renderer,
-    advanced::text::Renderer as _,
+    Center, Color, Element, Fill, Font,
     widget::{column, container, row, text},
 };
 
@@ -10,7 +9,7 @@ use crate::{
     i18n::I18n,
     rebuild::{Error, Run, Step},
     ui::{
-        components::{icon::Icon, icon_button},
+        components::{icon, icon_button},
         style::{buttons, colors, containers, spacing},
     },
 };
@@ -62,12 +61,12 @@ fn controls<'a>(
     has_journal: bool,
 ) -> Element<'a, Message> {
     let (toggle_label, arrow) = if expanded {
-        ("overview-hide-journal", Renderer::SCROLL_UP_ICON)
+        ("overview-hide-journal", icon::chevron_up())
     } else {
-        ("overview-show-journal", Renderer::SCROLL_DOWN_ICON)
+        ("overview-show-journal", icon::chevron_down())
     };
     let toggle = icon_button::view(
-        text(arrow.to_string()).font(Renderer::ICON_FONT).size(14),
+        arrow,
         i18n.text(toggle_label),
         Some(Message::ToggleJournal),
         buttons::secondary,
@@ -75,7 +74,7 @@ fn controls<'a>(
 
     let interrupt = run.filter(|run| run.is_running()).map(|run| {
         icon_button::view(
-            Icon::Stop,
+            icon::stop(),
             i18n.text("overview-rebuild-interrupt"),
             (!run.interrupting).then_some(Message::InterruptRebuild),
             buttons::danger,
@@ -84,13 +83,13 @@ fn controls<'a>(
 
     let log_actions = row![
         icon_button::view(
-            Icon::Copy,
+            icon::copy(),
             i18n.text("overview-copy-journal"),
             has_journal.then_some(Message::CopyJournal),
             buttons::secondary,
         ),
         icon_button::view(
-            Icon::Trash,
+            icon::trash(),
             i18n.text("overview-clear-journal"),
             has_journal.then_some(Message::ClearJournal),
             buttons::secondary,

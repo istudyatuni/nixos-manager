@@ -36,6 +36,9 @@ tempfile.workspace = true
 tokio.workspace = true
 url.workspace = true
 
+[build-dependencies]
+iced_lucide = "0.1"
+
 # keep software rendering responsive when running the development build
 [profile.dev.package.tiny-skia]
 opt-level = 3

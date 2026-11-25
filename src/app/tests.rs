@@ -1,14 +1,18 @@
 use iced::{
-    Font, Pixels, Point, Rectangle, Renderer, Size, Vector,
+    Color, Font, Pixels, Point, Rectangle, Renderer, Size, Vector,
     advanced::{
-        Layout, Shell, clipboard, layout, mouse, overlay,
-        renderer::Headless,
+        Layout, Shell, clipboard,
+        graphics::text::font_system,
+        layout, mouse, overlay,
+        renderer::{self, Headless, Renderer as _},
         widget::{Id, Operation, Tree, operation::Scrollable},
     },
+    widget::container,
 };
 use nixos_manager_apply_protocol::system::Target as SystemTarget;
 
 use super::*;
+use crate::ui::icon;
 
 #[derive(Default)]
 struct Labels {
@@ -89,9 +93,44 @@ fn layout(
 }
 
 async fn headless() -> Renderer {
+    font_system()
+        .write()
+        .expect("font system")
+        .load_font(icon::FONT.into());
     <Renderer as Headless>::new(Font::DEFAULT, Pixels(16.0), Some("tiny-skia"))
         .await
         .expect("software renderer")
+}
+
+#[tokio::test]
+async fn lucide_subset_renders_each_icon() {
+    let mut renderer = headless().await;
+    let size = Size::new(32.0, 32.0);
+    let viewport = Rectangle::with_size(size);
+    let mut rendered = std::collections::HashSet::new();
+
+    for &(name, glyph) in icon::ALL_ICONS {
+        let mut view = Element::from(
+            container(icon::render(glyph).size(24).color(Color::WHITE)).center(size.width),
+        );
+        let (tree, node, _) = layout(&mut view, &renderer, size);
+        renderer.reset(viewport);
+        view.as_widget().draw(
+            &tree,
+            &mut renderer,
+            &Theme::Dark,
+            &renderer::Style::default(),
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &viewport,
+        );
+        let pixels = renderer.screenshot(Size::new(32, 32), 1.0, Color::BLACK);
+        assert!(
+            pixels.chunks_exact(4).any(|pixel| pixel[0] > 0),
+            "{name} is blank"
+        );
+        assert!(rendered.insert(pixels), "{name} renders as another glyph");
+    }
 }
 
 fn boot_with_cache(cache: Result<Option<attic::Metadata>, attic::LoadError>) -> App {
@@ -316,7 +355,7 @@ async fn toolbar_settings_menu_opens_both_dialogs_without_a_repository() {
     };
 
     let closed = layout(&mut app.view(), &renderer, size).2;
-    let gear = closed.bounds(toolbar::SETTINGS_GEAR);
+    let gear = closed.bounds(icon::glyph("settings"));
     for point in [gear.center(), closed.bounds(&app.title()).center()] {
         let _ = app.update(Message::OpenSettingsMenu);
         let messages = click(&app, point);
@@ -619,7 +658,7 @@ async fn cache_settings_show_the_expiration_and_actions_in_order() {
         assert!((changes.center_y() - update.center_y()).abs() < 1.0);
         assert!(update.center().x > size.width / 2.0);
         assert!((forget_button.x + forget_button.width - (update.x + update.width)).abs() < 1.0);
-        assert!(labels.contains("×"));
+        assert!(labels.contains(icon::glyph("close")));
     }
 }
 
@@ -975,7 +1014,7 @@ async fn compact_overview_keeps_actions_menu_to_the_left_of_download() {
     });
     let renderer = headless().await;
     let labels = layout(&mut app.view(), &renderer, Size::new(320.0, 360.0)).2;
-    let trigger = labels.bounds("☰");
+    let trigger = labels.bounds(icon::glyph("menu"));
     let download = labels.bounds(&app.i18n.text("overview-download"));
     assert!(trigger.x + trigger.width <= download.x);
     assert!(trigger.y <= download.center().y && download.center().y <= trigger.y + trigger.height);
@@ -997,7 +1036,7 @@ async fn build_history_shows_system_configurations_without_a_repository() {
         let mut view = app.view();
         let (mut tree, node, labels) = layout(&mut view, &renderer, size);
         assert!(!labels.contains("Build History"));
-        let trigger = labels.bounds("☰");
+        let trigger = labels.bounds(icon::glyph("menu"));
         let mut messages = Vec::new();
         for event in &click {
             view.as_widget_mut().update(
@@ -1079,7 +1118,7 @@ async fn build_history_shows_system_configurations_without_a_repository() {
     let (viewport, _) = labels.scroll_viewport.expect("scrollable build history");
     let last_generation = labels.focusables.last().expect("selectable generation");
     assert!(last_generation.y > viewport.y + viewport.height);
-    let activate = labels.bounds("▶");
+    let activate = labels.bounds(icon::glyph("play"));
     let activate_button = labels
         .containers
         .iter()
@@ -1090,10 +1129,10 @@ async fn build_history_shows_system_configurations_without_a_repository() {
         activate_button.x + activate_button.width <= viewport.x + viewport.width - scrollbar_width
     );
     let title = labels.bounds("История сборок");
-    let close = labels.bounds("×");
+    let close = labels.bounds(icon::glyph("close"));
     assert!(close.x >= title.x + title.width);
     assert!(close.y + close.height <= viewport.y);
-    let refresh = labels.bounds("↻");
+    let refresh = labels.bounds(icon::glyph("refresh"));
     assert!(
         refresh.y >= viewport.y + viewport.height && refresh.y + refresh.height <= compact.height
     );
@@ -1103,7 +1142,7 @@ async fn build_history_shows_system_configurations_without_a_repository() {
             .text
             .iter()
             .find_map(|(label, bounds)| {
-                (label == "?"
+                (label == icon::glyph("help")
                     && bounds.x >= caption.x + caption.width
                     && (caption.y..=caption.y + caption.height).contains(&bounds.center_y()))
                 .then_some(*bounds)
@@ -1211,7 +1250,7 @@ async fn build_history_shows_system_configurations_without_a_repository() {
             );
         }
     }
-    let position = labels.bounds("×").center();
+    let position = labels.bounds(icon::glyph("close")).center();
     for event in [
         mouse::Event::CursorMoved { position },
         mouse::Event::ButtonPressed(mouse::Button::Left),
@@ -1302,7 +1341,7 @@ async fn build_history_confirmations_show_activation_and_rollback_details() {
             let icons: Vec<_> = labels
                 .text
                 .iter()
-                .filter(|(text, _)| text == "▶")
+                .filter(|(text, _)| text == icon::glyph("play"))
                 .map(|(_, bounds)| *bounds)
                 .collect();
             assert_eq!(icons.len(), 3);
@@ -1531,7 +1570,7 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
             .map(Message::BuildHistory);
         let (mut tree, node, labels) = layout(&mut view, &renderer, size);
         let remove = labels.bounds("Удалить выбранные");
-        let refresh = labels.bounds("↻");
+        let refresh = labels.bounds(icon::glyph("refresh"));
         assert!(remove.x < refresh.x);
         assert!(remove.y + remove.height <= size.height);
         assert!(refresh.y + refresh.height <= size.height);
@@ -1539,7 +1578,7 @@ async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
             labels.contains(&app.i18n.text("history-removal-boot-warning")),
             marked
         );
-        let close = labels.bounds("×").center();
+        let close = labels.bounds(icon::glyph("close")).center();
         let clear = labels
             .containers
             .iter()

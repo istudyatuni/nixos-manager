@@ -25,6 +25,7 @@ fn main() -> iced::Result {
     iced::application(App::boot, App::update, App::view)
         .title(App::title)
         .theme(App::theme)
+        .font(ui::icon::FONT)
         .scale_factor(App::scale_factor)
         .subscription(App::subscription)
         .window(window::Settings {
