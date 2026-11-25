@@ -452,6 +452,7 @@ impl App {
                     let close = state.connected(&result, attic::now());
                     if let Ok(metadata) = result {
                         self.set_cache(Ok(Some(metadata)), attic::now());
+                        self.overview.journal_expanded = false;
                         return self.finish_cache_action(close);
                     }
                     self.pending_close = None;

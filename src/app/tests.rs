@@ -154,6 +154,50 @@ fn journal_collapses_only_after_successful_downloads_and_rebuilds() {
     }
 }
 
+#[test]
+fn journal_collapses_after_successful_cache_connection() {
+    use cache_settings::Message as CacheMessage;
+
+    let mut app = boot_with_cache(Ok(None));
+    app.screen = Screen::CacheSettings(Box::new(cache_settings::State::new(None, true)));
+    let expiration = attic::now() + chrono::TimeDelta::days(2);
+    let token = attic::tests::jwt(
+        expiration.timestamp(),
+        serde_json::json!({ "main": { "r": 1 } }),
+    );
+    for message in [
+        CacheMessage::UrlChanged("https://cache.example.org".into()),
+        CacheMessage::TokenChanged(token),
+        CacheMessage::CacheSelected("main".into()),
+    ] {
+        let _ = app.update(Message::CacheSettings(message));
+    }
+    assert!(!app.overview.journal_expanded);
+
+    for result in [
+        Err(attic::Failure {
+            stage: attic::Stage::ApplyCache,
+            kind: attic::FailureKind::ConfigWrite,
+        }),
+        Ok(attic::Metadata {
+            cache_name: "main".into(),
+            cache_expiration: expiration,
+            server_url: "https://cache.example.org/".into(),
+            server_name: attic::DEFAULT_SERVER_NAME.into(),
+        }),
+    ] {
+        assert_eq!(
+            app.update(Message::CacheSettings(CacheMessage::Connect))
+                .units(),
+            1
+        );
+        assert!(app.overview.journal_expanded);
+        let failed = result.is_err();
+        let _ = app.update(Message::CacheConnected(result));
+        assert_eq!(app.overview.journal_expanded, failed);
+    }
+}
+
 #[tokio::test]
 async fn journal_icons_keep_alignment_and_show_tooltips_above() {
     let mut app = boot_with_cache(Ok(None));
