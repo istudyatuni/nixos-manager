@@ -623,6 +623,85 @@ async fn cache_settings_show_the_expiration_and_actions_in_order() {
     }
 }
 
+#[tokio::test]
+async fn cache_settings_require_confirmation_before_forgetting() {
+    let metadata = attic::Metadata {
+        cache_name: "main".into(),
+        cache_expiration: attic::now(),
+        server_url: "https://cache.example.org/".into(),
+        server_name: "private".into(),
+    };
+    let mut app = boot_with_cache(Ok(Some(metadata.clone())));
+    app.screen =
+        Screen::CacheSettings(Box::new(cache_settings::State::new(Some(&metadata), false)));
+    app.set_language(LanguagePreference::Russian);
+
+    let renderer = headless().await;
+    let settings_size = Size::new(800.0, 540.0);
+    let confirm_size = Size::new(560.0 / 1.5, 420.0 / 1.5);
+    let click = |app: &mut App, label, size| {
+        let viewport = Rectangle::with_size(size);
+        let mut messages = {
+            let mut view = app.view();
+            let (mut tree, node, labels) = layout(&mut view, &renderer, size);
+            let bounds = labels
+                .text
+                .iter()
+                .rfind(|(text, _)| text == label)
+                .unwrap()
+                .1;
+            assert!(viewport.contains(bounds.center()));
+            let mut messages = Vec::new();
+            for event in [
+                mouse::Event::ButtonPressed(mouse::Button::Left),
+                mouse::Event::ButtonReleased(mouse::Button::Left),
+            ] {
+                view.as_widget_mut().update(
+                    &mut tree,
+                    &Event::Mouse(event),
+                    Layout::new(&node),
+                    mouse::Cursor::Available(bounds.center()),
+                    &renderer,
+                    &mut clipboard::Null,
+                    &mut Shell::new(&mut messages),
+                    &viewport,
+                );
+            }
+            messages
+        };
+        assert_eq!(messages.len(), 1);
+        app.update(messages.pop().unwrap()).units()
+    };
+
+    let confirm_title = "Забыть настройки кеша?";
+    let forget = "Забыть настройки кеша";
+    assert_eq!(click(&mut app, forget, settings_size), 0);
+    assert!(
+        layout(&mut app.view(), &renderer, confirm_size)
+            .2
+            .contains(confirm_title)
+    );
+
+    assert_eq!(click(&mut app, "Отмена", confirm_size), 0);
+    assert_eq!(click(&mut app, forget, settings_size), 0);
+    assert_eq!(app.update(Message::DismissDialog).units(), 0);
+    assert!(
+        !layout(&mut app.view(), &renderer, settings_size)
+            .2
+            .contains(confirm_title)
+    );
+    assert!(
+        app.cache
+            .as_ref()
+            .is_ok_and(|cache| cache.as_ref() == Some(&metadata))
+    );
+
+    assert_eq!(click(&mut app, forget, settings_size), 0);
+    assert_eq!(click(&mut app, forget, confirm_size), 1);
+    let _ = app.update(Message::CacheForgotten(true));
+    assert!(app.cache.is_ok_and(|cache| cache.is_none()));
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn middle_click_pastes_primary_into_editable_settings_fields() {
@@ -879,6 +958,9 @@ async fn overview_shows_saved_cache_warnings_without_a_repository_or_cli() {
     );
     let _ = app.update(Message::OpenCacheSettings);
     let _ = app.update(Message::CacheSettings(cache_settings::Message::Forget));
+    let _ = app.update(Message::CacheSettings(
+        cache_settings::Message::ConfirmForget,
+    ));
     let _ = app.update(Message::CacheForgotten(true));
     assert!(app.cache.is_ok_and(|cache| cache.is_none()));
     assert!(app.cache_expiration_warning.is_none());

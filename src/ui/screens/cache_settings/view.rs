@@ -24,7 +24,16 @@ impl State {
         i18n: &'a I18n,
         saved: &'a Result<Option<Metadata>, attic::LoadError>,
     ) -> Element<'a, Message> {
-        modal::dialog(move || self.panel(i18n, saved), Some(Message::Close))
+        modal::dialog(
+            move || {
+                if self.confirming_forget {
+                    forget_confirmation(i18n)
+                } else {
+                    self.panel(i18n, saved)
+                }
+            },
+            Some(Message::Close),
+        )
     }
 
     fn panel<'a>(
@@ -295,6 +304,28 @@ impl State {
         };
         Some(column![note(i18n, key, color)])
     }
+}
+
+fn forget_confirmation<'a>(i18n: &I18n) -> Element<'a, Message> {
+    column![
+        text(i18n.text("cache-settings-forget-confirm")).size(22),
+        note(i18n, "cache-settings-forget-hint", colors::TEXT_MUTED)
+            .wrapping(text::Wrapping::WordOrGlyph),
+        row![
+            space().width(Fill),
+            button(text(i18n.text("cache-settings-cancel")))
+                .padding([7, 12])
+                .style(buttons::secondary)
+                .on_press(Message::Close),
+            button(text(i18n.text("cache-settings-forget")))
+                .padding([7, 12])
+                .style(buttons::danger)
+                .on_press(Message::ConfirmForget),
+        ]
+        .spacing(spacing::MD),
+    ]
+    .spacing(spacing::LG)
+    .into()
 }
 
 fn note<'a>(i18n: &I18n, key: &str, color: Color) -> Text<'a> {

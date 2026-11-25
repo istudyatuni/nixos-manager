@@ -17,6 +17,7 @@ pub enum Message {
     CacheSelected(String),
     Connect,
     Forget,
+    ConfirmForget,
     OpenGuide,
     Close,
 }
@@ -48,6 +49,7 @@ pub struct State {
     token_info: Option<Result<Token, TokenError>>,
     cache_name: Option<String>,
     status: Status,
+    confirming_forget: bool,
     close_requested: bool,
     guide_failed: bool,
 }
@@ -65,6 +67,7 @@ impl State {
             token_info: None,
             cache_name: saved.map(|saved| saved.cache_name.clone()),
             status: Status::Idle,
+            confirming_forget: false,
             close_requested: false,
             guide_failed: false,
         }
@@ -75,6 +78,18 @@ impl State {
     }
 
     pub fn update(&mut self, message: Message, now: DateTime<Utc>) -> Action {
+        if self.confirming_forget {
+            match message {
+                Message::Close => self.confirming_forget = false,
+                Message::ConfirmForget => {
+                    self.confirming_forget = false;
+                    self.status = Status::Forgetting;
+                    return Action::Forget;
+                }
+                _ => {}
+            }
+            return Action::None;
+        }
         if matches!(message, Message::Close) {
             if self.busy() {
                 self.close_requested = true;
@@ -109,9 +124,10 @@ impl State {
                 };
             }
             Message::Forget => {
-                self.status = Status::Forgetting;
-                return Action::Forget;
+                self.confirming_forget = true;
+                return Action::None;
             }
+            Message::ConfirmForget => return Action::None,
             Message::OpenGuide => {
                 self.guide_failed = false;
                 return Action::OpenGuide;
