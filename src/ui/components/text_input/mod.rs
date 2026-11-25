@@ -1,9 +1,11 @@
+use std::cell::RefCell;
+
 use iced::{
     Element, Event, Font, Length, Pixels, Point, Rectangle, Renderer, Size, Theme,
     advanced::{
         Clipboard, Layout, Shell, Widget, clipboard, input_method, layout, mouse, renderer,
         text::{self, Paragraph as _, Renderer as TextRenderer},
-        widget::{Operation, Tree, operation, tree},
+        widget::{Operation, Tree, tree},
     },
     alignment,
     widget::{TextInput as IcedTextInput, text_input as native},
@@ -11,14 +13,28 @@ use iced::{
 
 use crate::ui::style::inputs;
 
+mod history;
+#[cfg(test)]
+mod tests;
+
+use history::{Action as HistoryAction, History};
+
 const TEXT_SIZE: Pixels = Pixels(15.0);
 type Paragraph = <Renderer as TextRenderer>::Paragraph;
-pub type State = native::State<Paragraph>;
+type InputState = native::State<Paragraph>;
 
 pub struct TextInput<'a, Message> {
-    inner: IcedTextInput<'a, Message>,
-    editable: bool,
+    inner: IcedTextInput<'a, InputMessage>,
+    value: String,
+    on_input: Option<Box<dyn Fn(String) -> Message + 'a>>,
+    on_submit: Option<Message>,
     secure: bool,
+}
+
+#[derive(Clone)]
+enum InputMessage {
+    Changed(String),
+    Submit,
 }
 
 pub fn text_input<'a, Message: Clone>(placeholder: &str, value: &str) -> TextInput<'a, Message> {
@@ -27,20 +43,36 @@ pub fn text_input<'a, Message: Clone>(placeholder: &str, value: &str) -> TextInp
             .size(TEXT_SIZE)
             .padding([8, 10])
             .style(inputs::input),
-        editable: false,
+        value: value.to_owned(),
+        on_input: None,
+        on_submit: None,
         secure: false,
     }
 }
 
+pub fn input_state(tree: &mut Tree) -> &mut InputState {
+    tree.children[0].state.downcast_mut()
+}
+
+pub fn record_edit(tree: &mut Tree, value: &str) {
+    let cursor = input_state(tree).cursor();
+    tree.state.downcast_mut::<History>().record(value, cursor);
+}
+
 impl<'a, Message: Clone> TextInput<'a, Message> {
     pub fn on_input_maybe(mut self, on_input: Option<impl Fn(String) -> Message + 'a>) -> Self {
-        self.editable = on_input.is_some();
-        self.inner = self.inner.on_input_maybe(on_input);
+        self.inner = self
+            .inner
+            .on_input_maybe(on_input.as_ref().map(|_| InputMessage::Changed));
+        self.on_input = on_input.map(|callback| Box::new(callback) as _);
         self
     }
 
     pub fn on_submit_maybe(mut self, on_submit: Option<Message>) -> Self {
-        self.inner = self.inner.on_submit_maybe(on_submit);
+        self.inner = self
+            .inner
+            .on_submit_maybe(on_submit.as_ref().map(|_| InputMessage::Submit));
+        self.on_submit = on_submit;
         self
     }
 
@@ -63,15 +95,24 @@ impl<'a, Message: Clone> TextInput<'a, Message> {
 
 impl<Message: Clone> Widget<Message, Theme, Renderer> for TextInput<'_, Message> {
     fn tag(&self) -> tree::Tag {
-        self.inner.tag()
+        tree::Tag::of::<History>()
     }
 
     fn state(&self) -> tree::State {
-        self.inner.state()
+        tree::State::new(History::new(self.value.clone()))
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        vec![Tree::new(&self.inner as &dyn Widget<_, _, _>)]
     }
 
     fn diff(&self, tree: &mut Tree) {
-        self.inner.diff(tree);
+        tree.children[0].diff(&self.inner as &dyn Widget<_, _, _>);
+        let history = tree.state.downcast_mut::<History>();
+        if history.value != self.value {
+            // A form reset or automatic value change starts a new editing history.
+            *history = History::new(self.value.clone());
+        }
     }
 
     fn size(&self) -> Size<Length> {
@@ -84,7 +125,7 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for TextInput<'_, Message>
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        Widget::layout(&mut self.inner, tree, renderer, limits)
+        Widget::layout(&mut self.inner, &mut tree.children[0], renderer, limits)
     }
 
     fn operate(
@@ -94,7 +135,8 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for TextInput<'_, Message>
         renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
-        self.inner.operate(tree, layout, renderer, operation);
+        self.inner
+            .operate(&mut tree.children[0], layout, renderer, operation);
     }
 
     fn update(
@@ -108,14 +150,30 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for TextInput<'_, Message>
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        if cfg!(target_os = "linux")
+        let history = tree.state.downcast_mut::<History>();
+        let inner = &mut tree.children[0];
+        let state = inner.state.downcast_mut::<InputState>();
+        let mut commit = None;
+        let mut restored_cursor = None;
+
+        if self.on_input.is_some()
+            && state.is_focused()
+            && let Some(action) = HistoryAction::from_event(event)
+        {
+            shell.capture_event();
+            let Some(cursor) = history.restore(action, state.cursor()) else {
+                return;
+            };
+            restored_cursor = Some(cursor.state(&native::Value::new(&history.value)));
+            state.select_all();
+            commit = Some(history.value.clone());
+        } else if cfg!(target_os = "linux")
             && matches!(
                 event,
                 Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Middle))
             )
         {
-            let state = tree.state.downcast_mut::<State>();
-            if self.editable
+            if self.on_input.is_some()
                 && cursor.is_over(*viewport)
                 && let Some(position) = cursor.position_over(layout.bounds())
             {
@@ -124,7 +182,14 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for TextInput<'_, Message>
                     .next()
                     .expect("text input layout")
                     .bounds();
-                let index = cursor_index(state, bounds, position.x, renderer, self.secure);
+                let index = cursor_index(
+                    state,
+                    &history.value,
+                    bounds,
+                    position.x,
+                    renderer,
+                    self.secure,
+                );
                 state.focus();
                 state.move_cursor_to(index);
                 shell.capture_event();
@@ -136,24 +201,47 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for TextInput<'_, Message>
                     .chars()
                     .filter(|character| !character.is_control())
                     .collect();
-                if !content.is_empty() {
-                    // Let Iced insert the text, update the caret, and publish on_input.
-                    let paste = Event::InputMethod(input_method::Event::Commit(content));
-                    self.inner.update(
-                        tree, &paste, layout, cursor, renderer, clipboard, shell, viewport,
-                    );
+                if content.is_empty() {
+                    return;
                 }
-                return;
-            }
-            if state.is_focused() {
+                commit = Some(content);
+            } else if state.is_focused() {
                 state.unfocus();
                 shell.request_redraw();
             }
         }
 
+        // Use Iced's editing path for both restoring a snapshot and pasting primary selection.
+        let commit = commit.map(|value| Event::InputMethod(input_method::Event::Commit(value)));
+        let cursor_before = state.cursor();
+        let mut messages = Vec::new();
+        let mut input_shell = Shell::new(&mut messages);
         self.inner.update(
-            tree, event, layout, cursor, renderer, clipboard, shell, viewport,
+            inner,
+            commit.as_ref().unwrap_or(event),
+            layout,
+            cursor,
+            renderer,
+            clipboard,
+            &mut input_shell,
+            viewport,
         );
+        if let Some(cursor) = restored_cursor {
+            let state = inner.state.downcast_mut::<InputState>();
+            match cursor {
+                native::cursor::State::Index(index) => state.move_cursor_to(index),
+                native::cursor::State::Selection { start, end } => state.select_range(start, end),
+            }
+            shell.request_redraw();
+        }
+        let history = RefCell::new(history);
+        shell.merge(input_shell, |message| match message {
+            InputMessage::Changed(value) => {
+                history.borrow_mut().record(&value, cursor_before);
+                self.on_input.as_ref().expect("editable text input")(value)
+            }
+            InputMessage::Submit => self.on_submit.clone().expect("text input submit message"),
+        });
     }
 
     fn draw(
@@ -168,7 +256,7 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for TextInput<'_, Message>
     ) {
         Widget::draw(
             &self.inner,
-            tree,
+            &tree.children[0],
             renderer,
             theme,
             style,
@@ -187,7 +275,7 @@ impl<Message: Clone> Widget<Message, Theme, Renderer> for TextInput<'_, Message>
         renderer: &Renderer,
     ) -> mouse::Interaction {
         self.inner
-            .mouse_interaction(tree, layout, cursor, viewport, renderer)
+            .mouse_interaction(&tree.children[0], layout, cursor, viewport, renderer)
     }
 }
 
@@ -198,7 +286,8 @@ impl<'a, Message: Clone + 'a> From<TextInput<'a, Message>> for Element<'a, Messa
 }
 
 fn cursor_index(
-    state: &State,
+    state: &InputState,
+    text: &str,
     bounds: Rectangle,
     x: f32,
     renderer: &Renderer,
@@ -208,7 +297,6 @@ fn cursor_index(
         return 0;
     }
 
-    let text = operation::TextInput::text(state);
     let value = native::Value::new(text);
     let masked = secure.then(|| value.secure().to_string());
     let text = masked.as_deref().unwrap_or(text);

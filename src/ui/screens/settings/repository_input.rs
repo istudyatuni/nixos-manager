@@ -13,7 +13,7 @@ use super::Message;
 use crate::ui::{
     components::{
         icon,
-        text_input::{State as InputState, TextInput},
+        text_input::{TextInput, input_state, record_edit},
     },
     style::pick_lists,
 };
@@ -207,14 +207,14 @@ impl Widget<Message, Theme, Renderer> for RepositoryInput<'_> {
                 key: Named(key),
                 modifiers,
                 ..
-            }) if input.state.downcast_ref::<InputState>().is_focused() => Some((*key, *modifiers)),
+            }) if input_state(input).is_focused() => Some((*key, *modifiers)),
             _ => None,
         };
         let open_from_keyboard = self.suggestions.is_some()
             && state.mode != MenuMode::All
             && matches!(key, Some((Key::ArrowDown, modifiers)) if modifiers.alt() || self.options(state).is_empty());
         let handled = if arrow_clicked || open_from_keyboard {
-            input.state.downcast_mut::<InputState>().focus();
+            input_state(input).focus();
             if state.mode == MenuMode::All {
                 state.show(MenuMode::Closed);
             } else {
@@ -240,8 +240,9 @@ impl Widget<Message, Theme, Renderer> for RepositoryInput<'_> {
                 Key::Enter
                     if let Some(branch) = state.hovered.and_then(|index| options.get(index)) =>
                 {
+                    record_edit(input, branch);
                     shell.publish(Message::BranchChanged((*branch).to_owned()));
-                    input.state.downcast_mut::<InputState>().unfocus();
+                    input_state(input).unfocus();
                 }
                 Key::Escape => state.show(MenuMode::Closed),
                 _ => {}
@@ -261,7 +262,7 @@ impl Widget<Message, Theme, Renderer> for RepositoryInput<'_> {
                 input, event, layout, cursor, renderer, clipboard, shell, viewport,
             );
         }
-        let focused = input.state.downcast_ref::<InputState>().is_focused();
+        let focused = input_state(input).is_focused();
         if focused != was_focused {
             state.focused = focused;
             if focused && self.on_focus {
@@ -321,11 +322,13 @@ impl Widget<Message, Theme, Renderer> for RepositoryInput<'_> {
         viewport: &Rectangle,
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
-        let input = tree.children[0].state.downcast_mut::<InputState>();
+        let input = &mut tree.children[0];
         let state = tree.state.downcast_mut::<State>();
         let options = self.options(state);
         let bounds = layout.bounds();
-        if !input.is_focused() || options.is_empty() || !(bounds + translation).intersects(viewport)
+        if !input_state(input).is_focused()
+            || options.is_empty()
+            || !(bounds + translation).intersects(viewport)
         {
             return None;
         }
@@ -336,8 +339,9 @@ impl Widget<Message, Theme, Renderer> for RepositoryInput<'_> {
                 &mut state.menu,
                 options,
                 &mut state.hovered,
-                |branch: &str| {
-                    input.unfocus();
+                move |branch: &str| {
+                    record_edit(input, branch);
+                    input_state(input).unfocus();
                     Message::BranchChanged(branch.to_owned())
                 },
                 None,
