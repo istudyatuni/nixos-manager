@@ -14,6 +14,7 @@ cache-settings-missing-cli = Could not find attic in PATH. Install Attic and reo
 cache-settings-load-error = Could not read cache details. You can forget them or connect the cache again.
 cache-settings-connect = Connect cache
 cache-settings-update = Update cache
+cache-settings-token-required-tooltip = Enter a token to save the cache settings
 cache-settings-forget = Forget cache settings
 cache-settings-forget-confirm = Forget cache settings?
 cache-settings-cancel = Cancel

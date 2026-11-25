@@ -1,5 +1,5 @@
 use iced::{
-    Event, Point, Rectangle, Size,
+    Event, Point, Rectangle, Size, Vector,
     advanced::{Layout, Shell, clipboard, mouse},
 };
 
@@ -65,6 +65,77 @@ async fn cache_settings_show_the_expiration_and_actions_in_order() {
         assert!(update.center().x > size.width / 2.0);
         assert!((forget_button.x + forget_button.width - (update.x + update.width)).abs() < 1.0);
         assert!(labels.contains(icon::glyph("close")));
+    }
+}
+
+#[tokio::test]
+async fn cache_connection_button_explains_when_an_edited_form_needs_a_token() {
+    use cache_settings::Message as CacheMessage;
+
+    let metadata = attic::Metadata {
+        cache_name: "main".into(),
+        cache_expiration: attic::now(),
+        server_url: "https://cache.example.org/".into(),
+        server_name: "private".into(),
+    };
+    let renderer = headless().await;
+    let size = Size::new(800.0, 1000.0);
+    let viewport = Rectangle::with_size(size);
+    for saved in [None, Some(metadata.clone())] {
+        let mut app = boot_with_cache(Ok(saved.clone()));
+        app.screen =
+            Screen::CacheSettings(Box::new(cache_settings::State::new(saved.as_ref(), true)));
+        let label = app.i18n.text(if saved.is_some() {
+            "cache-settings-update"
+        } else {
+            "cache-settings-connect"
+        });
+        let has_tooltip = |app: &App| {
+            let mut view = app.view();
+            let (mut tree, node, labels) = layout(&mut view, &renderer, size);
+            let position = labels.bounds(&label).center();
+            let widget = view.as_widget_mut();
+            widget.update(
+                &mut tree,
+                &Event::Mouse(mouse::Event::CursorMoved { position }),
+                Layout::new(&node),
+                mouse::Cursor::Available(position),
+                &renderer,
+                &mut clipboard::Null,
+                &mut Shell::new(&mut Vec::new()),
+                &viewport,
+            );
+            widget
+                .overlay(
+                    &mut tree,
+                    Layout::new(&node),
+                    &renderer,
+                    &viewport,
+                    Vector::ZERO,
+                )
+                .is_some()
+        };
+        assert!(!has_tooltip(&app));
+        for (message, expected) in [
+            (
+                CacheMessage::UrlChanged("https://new.example.org/".into()),
+                true,
+            ),
+            (
+                CacheMessage::UrlChanged(
+                    saved
+                        .as_ref()
+                        .map_or_else(String::new, |saved| saved.server_url.clone()),
+                ),
+                false,
+            ),
+            (CacheMessage::ServerNameChanged("new-server".into()), true),
+            (CacheMessage::TokenChanged("invalid token".into()), false),
+            (CacheMessage::TokenChanged(String::new()), true),
+        ] {
+            let _ = app.update(Message::CacheSettings(message));
+            assert_eq!(has_tooltip(&app), expected);
+        }
     }
 }
 

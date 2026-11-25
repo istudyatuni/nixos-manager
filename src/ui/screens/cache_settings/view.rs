@@ -3,6 +3,7 @@ use iced::{
     Center, Color, Element, Fill,
     widget::{
         Column, Text, button, column, pick_list, rich_text, row, scrollable, space, span, text,
+        tooltip,
     },
 };
 
@@ -12,7 +13,7 @@ use crate::{
     ui::{
         components::{icon, icon_button, text_input::text_input},
         modal,
-        style::{buttons, colors, pick_lists, spacing},
+        style::{TOOLTIP_TEXT_SIZE, buttons, colors, containers, pick_lists, spacing},
     },
 };
 
@@ -76,7 +77,7 @@ impl State {
             body = body.push(text(i18n.with_args("cache-settings-expiration", &args)).size(14));
         }
         if let Some(can_connect) = can_connect {
-            body = body.push(self.connection_actions(i18n, metadata.is_some(), can_connect));
+            body = body.push(self.connection_actions(i18n, metadata, can_connect));
         }
         body = body.push(self.forget_section(i18n, !matches!(saved, Ok(None))));
 
@@ -94,22 +95,43 @@ impl State {
     fn connection_actions<'a>(
         &self,
         i18n: &I18n,
-        updating: bool,
+        saved: Option<&Metadata>,
         can_connect: bool,
     ) -> Column<'a, Message> {
-        let label = if updating {
+        let label = if saved.is_some() {
             "cache-settings-update"
         } else {
             "cache-settings-connect"
         };
+        let connect = button(text(i18n.text(label)))
+            .padding([7, 12])
+            .style(buttons::primary)
+            .on_press_maybe(can_connect.then_some(Message::Connect));
+        let saved_url = saved.map_or("", |saved| saved.server_url.trim());
+        let saved_name = saved.map_or(attic::DEFAULT_SERVER_NAME, |saved| {
+            saved.server_name.as_str()
+        });
+        let settings_changed =
+            self.url.trim() != saved_url || self.server_name.trim() != saved_name;
+        let connect: Element<'a, Message> =
+            if !can_connect && !self.busy() && settings_changed && self.token.trim().is_empty() {
+                tooltip(
+                    connect,
+                    text(i18n.text("cache-settings-token-required-tooltip"))
+                        .size(TOOLTIP_TEXT_SIZE),
+                    tooltip::Position::Top,
+                )
+                .gap(spacing::SM)
+                .style(containers::card)
+                .into()
+            } else {
+                connect.into()
+            };
         column![
             note(i18n, "cache-settings-config-details", colors::TEXT_MUTED),
             row![
                 note(i18n, "cache-settings-config-changes", colors::TEXT_MUTED).width(Fill),
-                button(text(i18n.text(label)))
-                    .padding([7, 12])
-                    .style(buttons::primary)
-                    .on_press_maybe(can_connect.then_some(Message::Connect)),
+                connect,
             ]
             .align_y(Center)
             .spacing(spacing::LG),

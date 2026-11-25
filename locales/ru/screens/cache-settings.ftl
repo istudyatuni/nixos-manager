@@ -14,6 +14,7 @@ cache-settings-missing-cli = Не удалось найти attic в PATH. Ус�
 cache-settings-load-error = Не удалось прочитать сведения о кеше. Их можно забыть или заново подключить кеш.
 cache-settings-connect = Подключить кеш
 cache-settings-update = Обновить кеш
+cache-settings-token-required-tooltip = Введите токен, чтобы сохранить настройки кеша
 cache-settings-forget = Забыть настройки кеша
 cache-settings-forget-confirm = Забыть настройки кеша?
 cache-settings-cancel = Отмена
