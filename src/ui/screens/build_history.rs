@@ -585,8 +585,7 @@ fn target_row<'a>(
         }),
         (!target.system.active).then(|| {
             icon_button::view(
-                // Shift the triangle right to balance its wider left edge.
-                container(icon::play()).padding(padding::left(2)),
+                icon::play(),
                 i18n.text("history-activate"),
                 can_activate.then(|| Message::Select {
                     target: ReadyTarget::Selected(target.store_path.clone()),

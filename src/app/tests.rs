@@ -1354,7 +1354,7 @@ async fn build_history_confirmations_show_activation_and_rollback_details() {
                     bounds.size() == Size::new(34.0, 34.0) && bounds.contains(icon.center())
                 })
                 .expect("activation button");
-            assert!(icon.center_x() > button.center_x());
+            assert!((icon.center_x() - button.center_x()).abs() < 0.5);
             let layout = Layout::new(&node);
             let widget = view.as_widget_mut();
             let cursor = mouse::Cursor::Available(icon.center());
