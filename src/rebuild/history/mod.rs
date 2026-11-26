@@ -152,6 +152,12 @@ impl Snapshot {
             .as_deref()
             .is_some_and(|boot| boot != target)
     }
+
+    #[cfg(test)]
+    pub(crate) fn with_switch_boot_target_for_test(mut self, target: impl Into<PathBuf>) -> Self {
+        self.switch_boot_target = Some(target.into());
+        self
+    }
 }
 
 #[derive(Clone)]

@@ -21,6 +21,7 @@ history-generation = generation { $number }
 history-activate = Activate
 history-activate-confirm = Activate this configuration?
 history-activation-warning = Activation lasts until reboot. The bootloader settings will remain in effect.
+history-system-profile-activation-warning = The system profile already points to this configuration. The bootloader settings will remain in effect.
 history-switch-non-system-profile-warning = Activation lasts until reboot. On the next boot, the bootloader may load the configuration that the system profile points to.
 history-mark-removal = Mark for deletion
 history-unmark-removal = Unmark

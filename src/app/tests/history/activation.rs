@@ -80,6 +80,62 @@ async fn escape_returns_from_activation_confirmation_to_build_history() {
 }
 
 #[tokio::test]
+async fn grouped_builds_use_the_same_activation_warning_as_system_generations() {
+    let app = boot_with_cache(Ok(None));
+    let renderer = headless().await;
+    let size = Size::new(800.0, 600.0);
+    let path = "/nix/store/older-system";
+    let build: history::Build = serde_json::from_value(serde_json::json!({
+        "id": "older",
+        "gc_root": "builds/older/result",
+        "store_path": path,
+        "source": { "kind": "built", "branch": "main", "revision": "0123456789abcdef" },
+    }))
+    .expect("build record");
+    let mut snapshot = history::Snapshot::default();
+    snapshot.targets.push(history::Target {
+        store_path: path.into(),
+        builds: Vec::new(),
+        system: SystemTarget {
+            generations: vec![1],
+            ..SystemTarget::default()
+        },
+    });
+    let mut switched = snapshot
+        .clone()
+        .with_switch_boot_target_for_test("/nix/store/system-profile");
+    let warning = app.i18n.text("history-activation-warning");
+    let switch_warning = app.i18n.text("history-switch-non-system-profile-warning");
+
+    for (snapshot, warns_about_switch) in [(&mut snapshot, false), (&mut switched, true)] {
+        for builds in [Vec::new(), vec![build.clone()]] {
+            snapshot.targets[0].builds = builds;
+            for booted in [true, false] {
+                snapshot.targets[0].system.booted = booted;
+                let mut state = build_history::State::default();
+                state.set_snapshot(&app.i18n, snapshot);
+                let _ = state.update(
+                    build_history::Message::Select(rebuild::ReadyTarget::Selected(path.into())),
+                    Some(snapshot),
+                    true,
+                    true,
+                );
+                let mut view = state
+                    .view(&app.i18n, Some(snapshot), true, None, None)
+                    .map(Message::BuildHistory);
+                let labels = layout(&mut view, &renderer, size).2;
+                assert!(labels.contains("Activate this configuration?"));
+                assert_eq!(labels.contains(&warning), !booted && !warns_about_switch);
+                assert_eq!(
+                    labels.contains(&switch_warning),
+                    !booted && warns_about_switch
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn build_history_confirmations_show_activation_and_rollback_details() {
     let mut app = boot_with_cache(Ok(None));
     app.set_language(LanguagePreference::Russian);
@@ -123,7 +179,7 @@ async fn build_history_confirmations_show_activation_and_rollback_details() {
     let size = Size::new(560.0, 540.0);
     let compact = Size::new(560.0 / 1.5, 420.0 / 1.5);
     let viewport = Rectangle::with_size(size);
-    let warning = app.i18n.text("history-activation-warning");
+    let warning = app.i18n.text("history-system-profile-activation-warning");
     let confirmation_labels = |state: &build_history::State, snapshot: &history::Snapshot| {
         layout(
             &mut state
@@ -271,7 +327,9 @@ async fn build_history_confirmations_show_activation_and_rollback_details() {
         true,
         true,
     );
-    assert!(confirmation_labels(&state, &snapshot).contains(&warning));
+    let labels = confirmation_labels(&state, &snapshot);
+    assert!(labels.contains(&warning));
+    assert!(!labels.contains(&app.i18n.text("history-activation-warning")));
 
     let messages = {
         let mut view = state

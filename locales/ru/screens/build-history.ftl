@@ -21,6 +21,7 @@ history-generation = поколение { $number }
 history-activate = Активировать
 history-activate-confirm = Активировать эту конфигурацию?
 history-activation-warning = Активация действует до перезагрузки. Настройки загрузчика сохранятся.
+history-system-profile-activation-warning = Эта конфигурация уже выбрана в системном профиле. Настройки загрузчика сохранятся.
 history-switch-non-system-profile-warning = Конфигурация будет активна до перезагрузки. При следующем запуске загрузчик может выбрать конфигурацию, на которую указывает системный профиль.
 history-mark-removal = Пометить к удалению
 history-unmark-removal = Снять отметку

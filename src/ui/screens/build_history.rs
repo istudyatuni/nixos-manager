@@ -392,7 +392,7 @@ struct TargetDetails {
     path: Content,
     entries: Vec<EntryDetails>,
     booted: bool,
-    profile_without_generation: bool,
+    profile_selected: bool,
 }
 
 #[derive(Clone)]
@@ -419,8 +419,7 @@ impl TargetDetails {
             path: Content::with_text(&target.store_path.to_string_lossy()),
             entries: generations.chain(builds).collect(),
             booted: system.booted,
-            profile_without_generation: system.profile_selected
-                && system.selected_generation.is_none(),
+            profile_selected: system.profile_selected,
         }
     }
 
@@ -463,7 +462,7 @@ impl TargetDetails {
             .wrap();
             details = details.push(statuses);
         }
-        if self.profile_without_generation {
+        if self.profile_selected && !self.entries.iter().any(|entry| entry.profile_selected) {
             details = details.push(profile_caption(i18n));
         }
         let entry_padding = padding::horizontal(spacing::LG);
@@ -612,7 +611,9 @@ fn confirmation<'a>(
     warns_about_switch: bool,
     show_close: bool,
 ) -> Element<'a, Message> {
-    let warning = if warns_about_switch {
+    let warning = if details.profile_selected {
+        "history-system-profile-activation-warning"
+    } else if warns_about_switch {
         "history-switch-non-system-profile-warning"
     } else {
         "history-activation-warning"
