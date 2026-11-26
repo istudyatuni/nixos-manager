@@ -1,17 +1,83 @@
 use iced::{
-    Event, Rectangle, Size, Vector,
-    advanced::{Layout, Shell, clipboard, mouse},
+    Event, Point, Rectangle, Size, Vector,
+    advanced::{Layout, Shell, clipboard, mouse, subscription},
+    event,
+    futures::StreamExt,
+    keyboard, window,
 };
 use nixos_manager_apply_protocol::system::Target as SystemTarget;
 
 use crate::{
-    app::Message,
+    app::{App, Message},
     i18n::LanguagePreference,
     rebuild::{self, history},
-    ui::{icon, screens::build_history},
+    ui::{
+        icon,
+        screens::{Screen, build_history},
+    },
 };
 
 use super::super::support::{boot_with_cache, headless, layout};
+
+#[tokio::test]
+async fn escape_returns_from_activation_confirmation_to_build_history() {
+    let mut app = boot_with_cache(Ok(None));
+    let renderer = headless().await;
+    let size = Size::new(800.0, 600.0);
+    let escape_messages = async |app: &App, repeat| {
+        let key = keyboard::Key::Named(keyboard::key::Named::Escape);
+        let interaction = subscription::Event::Interaction {
+            window: window::Id::unique(),
+            event: Event::Keyboard(keyboard::Event::KeyPressed {
+                key: key.clone(),
+                modified_key: key,
+                physical_key: keyboard::key::Physical::Code(keyboard::key::Code::Escape),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::default(),
+                text: None,
+                repeat,
+            }),
+            status: event::Status::Ignored,
+        };
+        iced::futures::stream::select_all(
+            subscription::into_recipes(app.subscription())
+                .into_iter()
+                .map(|recipe| {
+                    recipe.stream(Box::pin(iced::futures::stream::iter([interaction.clone()])))
+                }),
+        )
+        .collect::<Vec<_>>()
+        .await
+    };
+
+    let path = "/nix/store/inactive-system";
+    for target in [
+        rebuild::ReadyTarget::Selected(path.into()),
+        rebuild::ReadyTarget::Quick(history::QuickRollback::for_test(path)),
+    ] {
+        let mut state = build_history::State::default();
+        let _ = state.update(build_history::Message::Select(target), None, true, true);
+        app.screen = Screen::BuildHistory(state);
+        let labels = layout(&mut app.view(), &renderer, size).2;
+        assert!(labels.contains("Activate this configuration?"));
+
+        let Ok([message]) = <[Message; 1]>::try_from(escape_messages(&app, false).await) else {
+            panic!("expected one Escape message from the confirmation");
+        };
+        let _ = app.update(message);
+        assert!(matches!(app.screen, Screen::BuildHistory(_)));
+        let labels = layout(&mut app.view(), &renderer, size).2;
+        assert!(labels.contains("Build History"));
+        assert!(!labels.contains("Activate this configuration?"));
+        assert!(escape_messages(&app, true).await.is_empty());
+
+        let Ok([message]) = <[Message; 1]>::try_from(escape_messages(&app, false).await) else {
+            panic!("expected one Escape message from the list");
+        };
+        let _ = app.update(message);
+        assert!(matches!(app.screen, Screen::Overview));
+    }
+}
 
 #[tokio::test]
 async fn build_history_confirmations_show_activation_and_rollback_details() {
@@ -144,7 +210,7 @@ async fn build_history_confirmations_show_activation_and_rollback_details() {
     assert!(labels.contains("системный профиль"));
     let activate = labels.bounds("Активировать");
     assert!(activate.y + activate.height <= compact.height);
-    let _ = state.update(build_history::Message::Back, Some(&snapshot), true, true);
+    let _ = state.update(build_history::Message::Dismiss, Some(&snapshot), true, true);
 
     let rollback = history::QuickRollback::for_test(inactive_path);
     snapshot.quick_rollback = Some(rollback.clone());
@@ -192,6 +258,13 @@ async fn build_history_confirmations_show_activation_and_rollback_details() {
 
     snapshot.targets[1].system.booted = false;
     state.set_snapshot(&app.i18n, &snapshot);
+    let removal = snapshot.targets[1].generation_removal(0).unwrap();
+    let _ = state.update(
+        build_history::Message::ToggleRemoval(removal),
+        Some(&snapshot),
+        true,
+        true,
+    );
     let _ = state.update(
         build_history::Message::Select(rebuild::ReadyTarget::Quick(rollback)),
         Some(&snapshot),
@@ -199,6 +272,36 @@ async fn build_history_confirmations_show_activation_and_rollback_details() {
         true,
     );
     assert!(confirmation_labels(&state, &snapshot).contains(&warning));
+
+    let messages = {
+        let mut view = state
+            .view(&app.i18n, Some(&snapshot), true, None, None)
+            .map(Message::BuildHistory);
+        let (mut tree, node, _) = layout(&mut view, &renderer, size);
+        let mut messages = Vec::new();
+        view.as_widget_mut().update(
+            &mut tree,
+            &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            Layout::new(&node),
+            mouse::Cursor::Available(Point::new(size.width / 2.0, 4.0)),
+            &renderer,
+            &mut clipboard::Null,
+            &mut Shell::new(&mut messages),
+            &viewport,
+        );
+        messages
+    };
+    let [Message::BuildHistory(message @ build_history::Message::Dismiss)] = messages.as_slice()
+    else {
+        panic!("expected the backdrop click to dismiss the confirmation");
+    };
+    assert!(matches!(
+        state.update(message.clone(), Some(&snapshot), true, true),
+        build_history::Action::None
+    ));
+    let labels = confirmation_labels(&state, &snapshot);
+    assert!(labels.contains(&app.i18n.text("history-title")));
+    assert!(labels.contains(&app.i18n.text("history-removal-boot-warning")));
 }
 
 #[tokio::test]

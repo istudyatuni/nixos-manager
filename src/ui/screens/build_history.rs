@@ -28,7 +28,6 @@ pub enum Message {
     Refresh,
     HoverRollback(bool),
     Select(ReadyTarget),
-    Back,
     Activate,
     ToggleRemoval(Removal),
     ClearMarked,
@@ -77,7 +76,11 @@ impl State {
     ) -> Action {
         match message {
             Message::Close if !self.removing => return Action::Close,
-            Message::Dismiss if self.can_dismiss() => return Action::Close,
+            Message::Dismiss if self.can_dismiss() => {
+                if self.selection.take().is_none() {
+                    return Action::Close;
+                }
+            }
             Message::Refresh if !self.removing && snapshot.is_some() => {
                 self.rollback_hovered = false;
                 return Action::Refresh;
@@ -100,7 +103,6 @@ impl State {
                 self.rollback_hovered = false;
                 self.selection = Some((target, details));
             }
-            Message::Back => self.selection = None,
             Message::Activate if can_activate && !self.removing => {
                 if let Some((selection, _)) = self.selection.take() {
                     return Action::Activate(selection);
@@ -158,7 +160,7 @@ impl State {
     }
 
     fn can_dismiss(&self) -> bool {
-        !self.removing && self.marked.is_empty()
+        !self.removing && (self.selection.is_some() || self.marked.is_empty())
     }
 
     fn can_clear_marked(&self) -> bool {
@@ -637,7 +639,7 @@ fn confirmation<'a>(
             button(text(i18n.text("history-back")))
                 .padding([7, 12])
                 .style(buttons::secondary)
-                .on_press(Message::Back),
+                .on_press(Message::Dismiss),
             button(text(i18n.text("history-activate")))
                 .padding([7, 12])
                 .style(buttons::primary)

@@ -219,6 +219,7 @@ impl App {
                     (
                         Event::Keyboard(keyboard::Event::KeyPressed {
                             key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                            repeat: false,
                             ..
                         }),
                         event::Status::Ignored,
