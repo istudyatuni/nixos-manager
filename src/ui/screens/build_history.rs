@@ -27,10 +27,7 @@ pub enum Message {
     Dismiss,
     Refresh,
     HoverRollback(bool),
-    Select {
-        target: ReadyTarget,
-        generation: Option<u64>,
-    },
+    Select(ReadyTarget),
     Back,
     Activate,
     ToggleRemoval(Removal),
@@ -41,15 +38,14 @@ pub enum Message {
 
 #[derive(Clone, Copy)]
 pub enum TextTarget {
-    Row(usize, DetailText),
+    Group(usize, DetailText),
     Confirmation(DetailText),
 }
 
 #[derive(Clone, Copy)]
 pub enum DetailText {
     Path,
-    Generation(usize),
-    Note(usize),
+    Entry(usize),
 }
 
 pub enum Action {
@@ -65,7 +61,7 @@ pub enum Action {
 pub struct State {
     selection: Option<(ReadyTarget, TargetDetails)>,
     rollback_hovered: bool,
-    rows: Vec<TargetRow>,
+    groups: Vec<TargetDetails>,
     marked: Vec<Removal>,
     removing: bool,
     removal_error: Option<Error>,
@@ -87,33 +83,20 @@ impl State {
                 return Action::Refresh;
             }
             Message::HoverRollback(hovered) => self.rollback_hovered = hovered,
-            Message::Select { target, generation } if can_activate && !self.removing => {
-                let mut rows = self.rows.iter().filter(|row| {
-                    snapshot
-                        .and_then(|snapshot| snapshot.targets.get(row.target_index))
-                        .is_some_and(|entry| entry.store_path == target.path())
-                });
-                let details = match &target {
-                    ReadyTarget::Selected(_) => rows
-                        .find(|row| row.generation == generation)
-                        .map(|row| row.details.clone()),
-                    ReadyTarget::Quick(_) => rows.next().map(|first| {
-                        let mut details = first.details.clone();
-                        for row in rows {
-                            details
-                                .generations
-                                .extend(row.details.generations.iter().cloned());
-                            details.notes.extend(row.details.notes.iter().cloned());
-                            details.profile_without_generation |=
-                                row.details.profile_without_generation;
-                        }
-                        details
-                    }),
-                }
-                .unwrap_or_else(|| TargetDetails {
-                    path: Content::with_text(&target.path().to_string_lossy()),
-                    ..TargetDetails::default()
-                });
+            Message::Select(target) if can_activate && !self.removing => {
+                let details = snapshot
+                    .and_then(|snapshot| {
+                        snapshot
+                            .targets
+                            .iter()
+                            .position(|entry| entry.store_path == target.path())
+                    })
+                    .and_then(|index| self.groups.get(index))
+                    .cloned()
+                    .unwrap_or_else(|| TargetDetails {
+                        path: Content::with_text(&target.path().to_string_lossy()),
+                        ..TargetDetails::default()
+                    });
                 self.rollback_hovered = false;
                 self.selection = Some((target, details));
             }
@@ -145,9 +128,7 @@ impl State {
             }
             Message::SelectText(target, action) => {
                 let (details, field) = match target {
-                    TextTarget::Row(row, field) => {
-                        (self.rows.get_mut(row).map(|row| &mut row.details), field)
-                    }
+                    TextTarget::Group(index, field) => (self.groups.get_mut(index), field),
                     TextTarget::Confirmation(field) => {
                         (self.selection.as_mut().map(|(_, details)| details), field)
                     }
@@ -164,10 +145,16 @@ impl State {
     }
 
     fn can_mark(&self, snapshot: &Snapshot, removal: &Removal) -> bool {
-        self.rows
+        self.groups
             .iter()
-            .find(|row| row.removal.as_ref() == Some(removal))
-            .is_some_and(|row| snapshot.targets[row.target_index].can_mark(removal, &self.marked))
+            .zip(&snapshot.targets)
+            .find(|(group, _)| {
+                group
+                    .entries
+                    .iter()
+                    .any(|entry| entry.removal.as_ref() == Some(removal))
+            })
+            .is_some_and(|(_, target)| target.can_mark(removal, &self.marked))
     }
 
     fn can_dismiss(&self) -> bool {
@@ -204,20 +191,11 @@ impl State {
     }
 
     pub fn set_snapshot(&mut self, i18n: &I18n, snapshot: &Snapshot) {
-        self.rows.clear();
-        for (index, target) in snapshot.targets.iter().enumerate() {
-            let system = &target.system;
-            for &number in &system.generations {
-                self.rows
-                    .push(TargetRow::new(i18n, index, target, Some(number)));
-            }
-            if system.generations.is_empty()
-                || !target.builds.is_empty()
-                || (system.profile_selected && system.selected_generation.is_none())
-            {
-                self.rows.push(TargetRow::new(i18n, index, target, None));
-            }
-        }
+        self.groups = snapshot
+            .targets
+            .iter()
+            .map(|target| TargetDetails::new(i18n, target))
+            .collect();
         if !snapshot.unavailable {
             for removal in std::mem::take(&mut self.marked) {
                 if self.can_mark(snapshot, &removal) {
@@ -295,10 +273,7 @@ fn list<'a>(
         .on_press_maybe(
             rollback
                 .filter(|_| can_activate)
-                .map(|rollback| Message::Select {
-                    target: ReadyTarget::Quick(rollback.clone()),
-                    generation: None,
-                }),
+                .map(|rollback| Message::Select(ReadyTarget::Quick(rollback.clone()))),
         );
     let rollback_action = tooltip(
         mouse_area(rollback_button)
@@ -387,8 +362,8 @@ fn list<'a>(
         if snapshot.targets.is_empty() && !snapshot.unavailable {
             entries = entries.push(text(i18n.text("history-empty")));
         }
-        for index in 0..state.rows.len() {
-            entries = entries.push(rule::horizontal(1)).push(target_row(
+        for index in 0..state.groups.len() {
+            entries = entries.push(rule::horizontal(1)).push(target_group(
                 i18n,
                 snapshot,
                 state,
@@ -410,75 +385,47 @@ fn list<'a>(
     column![header, body, actions].spacing(spacing::LG).into()
 }
 
-struct TargetRow {
-    target_index: usize,
-    generation: Option<u64>,
-    details: TargetDetails,
-    removal: Option<Removal>,
-}
-
-impl TargetRow {
-    fn new(i18n: &I18n, target_index: usize, target: &Target, number: Option<u64>) -> Self {
-        Self {
-            target_index,
-            generation: number,
-            details: TargetDetails::new(i18n, target, number),
-            removal: target.removal(number),
-        }
-    }
-}
-
 #[derive(Clone, Default)]
 struct TargetDetails {
     path: Content,
-    generations: Vec<GenerationDetails>,
+    entries: Vec<EntryDetails>,
     booted: bool,
     profile_without_generation: bool,
-    notes: Vec<Content>,
 }
 
 #[derive(Clone)]
-struct GenerationDetails {
+struct EntryDetails {
     label: Content,
     profile_selected: bool,
+    removal: Option<Removal>,
 }
 
 impl TargetDetails {
-    fn new(i18n: &I18n, target: &Target, number: Option<u64>) -> Self {
-        let notes = if number.is_none() {
-            target
-                .builds
-                .iter()
-                .map(|build| Content::with_text(&build_label(i18n, build)))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let profile_selected =
-            target.system.profile_selected && number == target.system.selected_generation;
+    fn new(i18n: &I18n, target: &Target) -> Self {
+        let system = &target.system;
+        let generations = system.generations.iter().map(|&number| EntryDetails {
+            label: Content::with_text(&generation_label(i18n, number)),
+            profile_selected: system.profile_selected && system.selected_generation == Some(number),
+            removal: target.generation_removal(number),
+        });
+        let builds = target.builds.iter().map(|build| EntryDetails {
+            label: Content::with_text(&build_label(i18n, build)),
+            profile_selected: false,
+            removal: target.build_removal(build),
+        });
         Self {
             path: Content::with_text(&target.store_path.to_string_lossy()),
-            generations: number
-                .into_iter()
-                .map(|number| GenerationDetails {
-                    label: Content::with_text(&generation_label(i18n, number)),
-                    profile_selected,
-                })
-                .collect(),
-            booted: target.system.booted,
-            profile_without_generation: number.is_none() && profile_selected,
-            notes,
+            entries: generations.chain(builds).collect(),
+            booted: system.booted,
+            profile_without_generation: system.profile_selected
+                && system.selected_generation.is_none(),
         }
     }
 
     fn text_mut(&mut self, field: DetailText) -> Option<&mut Content> {
         match field {
             DetailText::Path => Some(&mut self.path),
-            DetailText::Generation(index) => self
-                .generations
-                .get_mut(index)
-                .map(|entry| &mut entry.label),
-            DetailText::Note(line) => self.notes.get_mut(line),
+            DetailText::Entry(index) => self.entries.get_mut(index).map(|entry| &mut entry.label),
         }
     }
 
@@ -487,16 +434,15 @@ impl TargetDetails {
         i18n: &I18n,
         active: bool,
         text_target: impl Fn(DetailText) -> TextTarget + Copy + 'a,
+        activation: Option<Element<'a, Message>>,
+        removal_button: impl Fn(&Removal) -> Option<Element<'a, Message>>,
     ) -> Element<'a, Message> {
-        let mut details = column![selectable_text::view(
-            &self.path,
-            Font::DEFAULT,
-            16,
-            colors::TEXT,
-            move |action| Message::SelectText(text_target(DetailText::Path), action),
-        )]
-        .spacing(spacing::SM)
-        .width(Fill);
+        let path =
+            selectable_text::view(&self.path, Font::DEFAULT, 16, colors::TEXT, move |action| {
+                Message::SelectText(text_target(DetailText::Path), action)
+            });
+        let heading = row![path, activation].align_y(Center).spacing(spacing::MD);
+        let mut details = column![heading].spacing(spacing::SM).width(Fill);
         if active || self.booted {
             let statuses = row![
                 active.then(|| caption_with_help(
@@ -518,31 +464,35 @@ impl TargetDetails {
         if self.profile_without_generation {
             details = details.push(profile_caption(i18n));
         }
-        for (index, generation) in self.generations.iter().enumerate() {
-            let color = if generation.profile_selected {
+        let entry_padding = padding::horizontal(spacing::LG);
+        for (index, entry) in self.entries.iter().enumerate() {
+            if index > 0 {
+                let divider = rule::horizontal(1).style(|theme| rule::Style {
+                    color: colors::BORDER_MUTED,
+                    ..rule::default(theme)
+                });
+                details = details.push(
+                    container(divider)
+                        .padding(entry_padding.right(spacing::LG + icon_button::SIZE)),
+                );
+            }
+            let color = if entry.profile_selected {
                 details = details.push(profile_caption(i18n));
                 colors::INFO
             } else {
                 colors::TEXT_MUTED
             };
-            details = details.push(selectable_text::view(
-                &generation.label,
-                Font::DEFAULT,
-                13,
-                color,
-                move |action| {
-                    Message::SelectText(text_target(DetailText::Generation(index)), action)
-                },
-            ));
-        }
-        for (line, note) in self.notes.iter().enumerate() {
-            details = details.push(selectable_text::view(
-                note,
-                Font::DEFAULT,
-                13,
-                colors::TEXT_MUTED,
-                move |action| Message::SelectText(text_target(DetailText::Note(line)), action),
-            ));
+            let label =
+                selectable_text::view(&entry.label, Font::DEFAULT, 13, color, move |action| {
+                    Message::SelectText(text_target(DetailText::Entry(index)), action)
+                });
+            let removal = entry
+                .removal
+                .as_ref()
+                .and_then(&removal_button)
+                .map(|button| container(button).padding(padding::right(icon_button::SIZE)));
+            let entry = row![label, removal].align_y(Center).spacing(spacing::MD);
+            details = details.push(container(entry).padding(entry_padding));
         }
         details.into()
     }
@@ -554,15 +504,14 @@ fn generation_label(i18n: &I18n, number: u64) -> String {
     i18n.with_args("history-generation", &args)
 }
 
-fn target_row<'a>(
+fn target_group<'a>(
     i18n: &I18n,
     snapshot: &Snapshot,
     state: &'a State,
     index: usize,
     can_activate: bool,
 ) -> Element<'a, Message> {
-    let labels = &state.rows[index];
-    let target = &snapshot.targets[labels.target_index];
+    let target = &snapshot.targets[index];
     let marked = &state.marked;
     let can_toggle = !state.removing && !snapshot.unavailable;
     let highlight_activation = state.rollback_hovered
@@ -570,47 +519,39 @@ fn target_row<'a>(
             .quick_rollback
             .as_ref()
             .is_some_and(|rollback| rollback.target == target.store_path);
-    let details = labels
-        .details
-        .view(i18n, target.system.active, move |field| {
-            TextTarget::Row(index, field)
-        });
-    row![
-        details,
-        labels.removal.as_ref().map(|removal| {
+    let activation = (!target.system.active).then(|| {
+        icon_button::view(
+            icon::play(),
+            i18n.text("history-activate"),
+            can_activate.then(|| Message::Select(ReadyTarget::Selected(target.store_path.clone()))),
+            if highlight_activation {
+                buttons::highlighted
+            } else {
+                buttons::secondary
+            },
+        )
+    });
+    state.groups[index].view(
+        i18n,
+        target.system.active,
+        move |field| TextTarget::Group(index, field),
+        activation,
+        |removal| {
             let selected = marked.contains(removal);
             let (label, style) = if selected {
                 ("history-unmark-removal", buttons::danger as _)
             } else {
                 ("history-mark-removal", buttons::secondary as _)
             };
-            icon_button::view(
+            Some(icon_button::view(
                 icon::trash(),
                 i18n.text(label),
                 (can_toggle && (selected || target.can_mark(removal, marked)))
                     .then(|| Message::ToggleRemoval(removal.clone())),
                 style,
-            )
-        }),
-        (!target.system.active).then(|| {
-            icon_button::view(
-                icon::play(),
-                i18n.text("history-activate"),
-                can_activate.then(|| Message::Select {
-                    target: ReadyTarget::Selected(target.store_path.clone()),
-                    generation: labels.generation,
-                }),
-                if highlight_activation {
-                    buttons::highlighted
-                } else {
-                    buttons::secondary
-                },
-            )
-        }),
-    ]
-    .spacing(spacing::MD)
-    .align_y(Center)
-    .into()
+            ))
+        },
+    )
 }
 
 fn missing_tool_message(i18n: &I18n, program: &str) -> String {
@@ -684,7 +625,7 @@ fn confirmation<'a>(
         .spacing(spacing::LG),
         scrollable(
             column![
-                details.view(i18n, false, TextTarget::Confirmation),
+                details.view(i18n, false, TextTarget::Confirmation, None, |_| None),
                 (!details.booted).then(|| notice(i18n.text(warning))),
             ]
             .spacing(spacing::LG),

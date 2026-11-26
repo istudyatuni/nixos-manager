@@ -14,6 +14,106 @@ use crate::{
 use super::super::support::{boot_with_cache, headless, layout};
 
 #[tokio::test]
+async fn build_history_marks_system_generations_and_app_builds_independently() {
+    let app = boot_with_cache(Ok(None));
+    let path = "/nix/store/shared-system";
+    let builds = ["gen-one", "gen-two"].map(|id| {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "gc_root": format!("builds/{id}/result"),
+            "store_path": path,
+            "source": { "kind": "built", "branch": id, "revision": "0123456789abcdef" }
+        }))
+        .expect("build record")
+    });
+    let mut snapshot = history::Snapshot::default();
+    snapshot.targets.push(history::Target {
+        store_path: path.into(),
+        builds: builds.into(),
+        system: SystemTarget {
+            generations: vec![42],
+            ..SystemTarget::default()
+        },
+    });
+    let mut state = build_history::State::default();
+    state.set_snapshot(&app.i18n, &snapshot);
+    let renderer = headless().await;
+    let size = Size::new(560.0, 540.0);
+    let viewport = Rectangle::with_size(size);
+
+    for index in [0, 1, 2, 1] {
+        let messages = {
+            let mut view = state
+                .view(&app.i18n, Some(&snapshot), true, None, None)
+                .map(Message::BuildHistory);
+            let (mut tree, node, labels) = layout(&mut view, &renderer, size);
+            let trash: Vec<_> = labels
+                .text
+                .iter()
+                .filter(|(label, _)| label == icon::glyph("trash"))
+                .map(|(_, bounds)| bounds.center())
+                .collect();
+            assert_eq!(trash.len(), 3);
+            assert_eq!(labels.focusables.len(), 4);
+            let activation = labels.bounds(icon::glyph("play")).center();
+            let activation_width = labels
+                .containers
+                .iter()
+                .filter(|bounds| bounds.contains(activation))
+                .map(|bounds| bounds.width)
+                .min_by(f32::total_cmp)
+                .expect("activation button");
+            let inset = labels.focusables[1].x - labels.focusables[0].x;
+            assert!(inset > 0.0);
+            assert!(
+                trash
+                    .iter()
+                    .zip(&labels.focusables[1..])
+                    .all(|(icon, label)| {
+                        (icon.y - label.center_y()).abs() < 1.0
+                            && (activation.x - icon.x - inset - activation_width).abs() < 1.0
+                    })
+            );
+            let mut messages = Vec::new();
+            for event in [
+                mouse::Event::ButtonPressed(mouse::Button::Left),
+                mouse::Event::ButtonReleased(mouse::Button::Left),
+            ] {
+                view.as_widget_mut().update(
+                    &mut tree,
+                    &Event::Mouse(event),
+                    Layout::new(&node),
+                    mouse::Cursor::Available(trash[index]),
+                    &renderer,
+                    &mut clipboard::Null,
+                    &mut Shell::new(&mut messages),
+                    &viewport,
+                );
+            }
+            messages
+        };
+        let [Message::BuildHistory(message @ build_history::Message::ToggleRemoval(_))] =
+            messages.as_slice()
+        else {
+            panic!("expected a removal toggle for entry {index}");
+        };
+        let _ = state.update(message.clone(), Some(&snapshot), true, true);
+    }
+
+    let build_history::Action::Remove(marked) =
+        state.update(build_history::Message::Remove, Some(&snapshot), true, true)
+    else {
+        panic!("expected selected system and app entries");
+    };
+    assert!(matches!(
+        marked.as_slice(),
+        [history::Removal::Generation(generation), history::Removal::Build { path: build_path, id }]
+            if generation.number == 42 && generation.path == std::path::Path::new(path)
+                && build_path == std::path::Path::new(path) && id == "gen-two"
+    ));
+}
+
+#[tokio::test]
 async fn build_history_toggles_removal_for_an_old_duplicate_generation() {
     #[derive(Clone, Copy)]
     enum Control {

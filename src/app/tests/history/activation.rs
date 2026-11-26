@@ -68,90 +68,83 @@ async fn build_history_confirmations_show_activation_and_rollback_details() {
         )
         .2
     };
-    for (index, (generation, show_profile, detail_count)) in
-        [(Some(1), true, 2), (Some(0), false, 2), (None, false, 3)]
-            .into_iter()
-            .enumerate()
-    {
-        let messages = {
-            let mut view = state
-                .view(&app.i18n, Some(&snapshot), true, None, None)
-                .map(Message::BuildHistory);
-            let (mut tree, node, labels) = layout(&mut view, &renderer, size);
-            let icons: Vec<_> = labels
-                .text
-                .iter()
-                .filter(|(text, _)| text == icon::glyph("play"))
-                .map(|(_, bounds)| *bounds)
-                .collect();
-            assert_eq!(icons.len(), 3);
-            assert!(!labels.contains("Активировать"));
-            let icon = icons[index];
-            let button = labels
-                .containers
-                .iter()
-                .find(|bounds| {
-                    bounds.size() == Size::new(34.0, 34.0) && bounds.contains(icon.center())
-                })
-                .expect("activation button");
-            assert!((icon.center_x() - button.center_x()).abs() < 0.5);
-            let layout = Layout::new(&node);
-            let widget = view.as_widget_mut();
-            let cursor = mouse::Cursor::Available(icon.center());
-            let mut messages = Vec::new();
-            for event in [
-                mouse::Event::CursorMoved {
-                    position: icon.center(),
-                },
-                mouse::Event::ButtonPressed(mouse::Button::Left),
-                mouse::Event::ButtonReleased(mouse::Button::Left),
-            ] {
-                widget.update(
-                    &mut tree,
-                    &Event::Mouse(event),
-                    layout,
-                    cursor,
-                    &renderer,
-                    &mut clipboard::Null,
-                    &mut Shell::new(&mut messages),
-                    &viewport,
+    let messages = {
+        let mut view = state
+            .view(&app.i18n, Some(&snapshot), true, None, None)
+            .map(Message::BuildHistory);
+        let (mut tree, node, labels) = layout(&mut view, &renderer, size);
+        let icons: Vec<_> = labels
+            .text
+            .iter()
+            .filter(|(text, _)| text == icon::glyph("play"))
+            .map(|(_, bounds)| *bounds)
+            .collect();
+        assert_eq!(icons.len(), 1);
+        assert!(!labels.contains("Активировать"));
+        let icon = icons[0];
+        let button = labels
+            .containers
+            .iter()
+            .find(|bounds| bounds.size() == Size::new(34.0, 34.0) && bounds.contains(icon.center()))
+            .expect("activation button");
+        assert!((icon.center_x() - button.center_x()).abs() < 0.5);
+        let [_, _, path, generation, ..] = labels.focusables.as_slice() else {
+            panic!("expected paths and generation labels");
+        };
+        assert!((button.center_y() - path.center_y()).abs() < 0.5);
+        assert!(button.y + button.height <= generation.y);
+        let layout = Layout::new(&node);
+        let widget = view.as_widget_mut();
+        let cursor = mouse::Cursor::Available(icon.center());
+        let mut messages = Vec::new();
+        for event in [
+            mouse::Event::CursorMoved {
+                position: icon.center(),
+            },
+            mouse::Event::ButtonPressed(mouse::Button::Left),
+            mouse::Event::ButtonReleased(mouse::Button::Left),
+        ] {
+            widget.update(
+                &mut tree,
+                &Event::Mouse(event),
+                layout,
+                cursor,
+                &renderer,
+                &mut clipboard::Null,
+                &mut Shell::new(&mut messages),
+                &viewport,
+            );
+            if matches!(event, mouse::Event::CursorMoved { .. }) {
+                assert!(
+                    widget
+                        .overlay(&mut tree, layout, &renderer, &viewport, Vector::ZERO)
+                        .is_some()
                 );
-                if matches!(event, mouse::Event::CursorMoved { .. }) {
-                    assert!(
-                        widget
-                            .overlay(&mut tree, layout, &renderer, &viewport, Vector::ZERO)
-                            .is_some()
-                    );
-                }
             }
-            messages
-        };
-        let [
-            Message::BuildHistory(
-                message @ build_history::Message::Select {
-                    target: rebuild::ReadyTarget::Selected(path),
-                    generation: selected_generation,
-                },
-            ),
-        ] = messages.as_slice()
-        else {
-            panic!("expected an activation selection");
-        };
-        assert_eq!(path, std::path::Path::new(inactive_path));
-        assert_eq!(*selected_generation, generation);
-        let _ = state.update(message.clone(), Some(&snapshot), true, true);
+        }
+        messages
+    };
+    let [
+        Message::BuildHistory(
+            message @ build_history::Message::Select(rebuild::ReadyTarget::Selected(path)),
+        ),
+    ] = messages.as_slice()
+    else {
+        panic!("expected an activation selection");
+    };
+    assert_eq!(path, std::path::Path::new(inactive_path));
+    let _ = state.update(message.clone(), Some(&snapshot), true, true);
 
-        let labels = confirmation_labels(&state, &snapshot);
-        assert_eq!(labels.focusables.len(), detail_count);
-        assert!(labels.contains("загружена"));
-        assert!(!labels.contains(&warning));
-        let active_badge = app.i18n.text("history-active");
-        assert!(!labels.text.iter().any(|(label, _)| label == &active_badge));
-        assert_eq!(labels.contains("системный профиль"), show_profile);
-        let activate = labels.bounds("Активировать");
-        assert!(activate.y + activate.height <= compact.height);
-        let _ = state.update(build_history::Message::Back, Some(&snapshot), true, true);
-    }
+    let labels = confirmation_labels(&state, &snapshot);
+    assert_eq!(labels.focusables.len(), 5);
+    assert!(labels.contains("загружена"));
+    assert!(!labels.contains(&warning));
+    let active_badge = app.i18n.text("history-active");
+    assert!(!labels.text.iter().any(|(label, _)| label == &active_badge));
+    assert!(labels.contains("системный профиль"));
+    let activate = labels.bounds("Активировать");
+    assert!(activate.y + activate.height <= compact.height);
+    let _ = state.update(build_history::Message::Back, Some(&snapshot), true, true);
 
     let rollback = history::QuickRollback::for_test(inactive_path);
     snapshot.quick_rollback = Some(rollback.clone());
@@ -200,10 +193,7 @@ async fn build_history_confirmations_show_activation_and_rollback_details() {
     snapshot.targets[1].system.booted = false;
     state.set_snapshot(&app.i18n, &snapshot);
     let _ = state.update(
-        build_history::Message::Select {
-            target: rebuild::ReadyTarget::Quick(rollback),
-            generation: None,
-        },
+        build_history::Message::Select(rebuild::ReadyTarget::Quick(rollback)),
         Some(&snapshot),
         true,
         true,
@@ -252,7 +242,7 @@ async fn build_history_shows_a_disabled_rollback_button_with_a_tooltip() {
         }
         assert!(!messages.iter().any(|message| matches!(
             message,
-            Message::BuildHistory(build_history::Message::Select { .. })
+            Message::BuildHistory(build_history::Message::Select(_))
         )));
         let mut tooltip = widget
             .overlay(
