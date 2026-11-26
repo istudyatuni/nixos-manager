@@ -13,7 +13,7 @@ use iced::{
 use crate::{
     config::{
         CONFIG_DIRECTORY, Config, DEFAULT_REPO_PATH, RepositoryUrlError, SaveError, UI_SCALES,
-        display_repo_path, github_repository, valid_token,
+        display_repo_path, github_repository, valid_branch, valid_token,
     },
     git::{self, Branch, RemoteBranchesError, RemoteRefs},
     i18n::{I18n, LanguagePreference},
@@ -38,6 +38,7 @@ pub enum Message {
     TokenBlurred,
     PathChanged(String),
     BranchChanged(String),
+    BranchBlurred,
     FlakeDirectoryChanged(String),
     InputFocused,
     LoadRemoteBranches,
@@ -98,6 +99,7 @@ pub struct State {
     repository_error: Option<RepositoryUrlError>,
     token_focused: bool,
     token_invalid: bool,
+    branch_invalid: bool,
     show_access_errors: bool,
     local: Lookup<Vec<Branch>>,
     remote: Lookup<Result<RemoteRefs, RemoteBranchesError>, RemoteQuery>,
@@ -117,6 +119,7 @@ impl State {
             repository_error: None,
             token_focused: false,
             token_invalid: false,
+            branch_invalid: false,
             show_access_errors: false,
             draft,
             error: None,
@@ -144,6 +147,7 @@ impl State {
         match error {
             SaveError::Repository(error) => self.repository_error = Some(error),
             SaveError::Token => self.token_invalid = true,
+            SaveError::Branch => self.branch_invalid = true,
             error => self.error = Some(error),
         }
     }
@@ -333,6 +337,7 @@ impl State {
             && let Some(branch) = &remote.default_branch
         {
             self.draft.branch.clone_from(branch);
+            self.branch_invalid = false;
             self.auto_branch = true;
         }
         (std::mem::take(&mut self.save_after_lookup)
@@ -414,6 +419,11 @@ impl State {
                 self.token_invalid = !valid_token(self.draft.token.trim());
                 return self.check_repository_access();
             }
+            Message::BranchBlurred => {
+                self.branch_invalid =
+                    self.repository.is_ok() && !valid_branch(self.draft.branch.trim());
+                return Action::None;
+            }
             Message::LoadRemoteBranches => {
                 return Action::LookupBranches(Some(RemoteQuery::Branches));
             }
@@ -458,12 +468,14 @@ impl State {
             }
             Message::BranchChanged(value) => {
                 self.draft.branch = value;
+                self.branch_invalid = false;
                 self.auto_branch = false;
             }
             Message::FlakeDirectoryChanged(value) => self.draft.flake_directory = value.into(),
             Message::RepositoryBlurred
             | Message::TokenFocused
             | Message::TokenBlurred
+            | Message::BranchBlurred
             | Message::InputFocused
             | Message::LoadRemoteBranches
             | Message::Cancel
@@ -555,10 +567,12 @@ impl State {
             &i18n.text("settings-branch-placeholder"),
             &self.draft.branch,
         )
+        .invalid(self.branch_invalid)
         .on_input_maybe(branch_editing.then_some(Message::BranchChanged))
         .on_submit_maybe(submit.clone());
         let mut branch_input =
-            RepositoryInput::new(branch, branch_editing.then_some(Message::InputFocused));
+            RepositoryInput::new(branch, branch_editing.then_some(Message::InputFocused))
+                .on_blur(Message::BranchBlurred);
         if branch_editing && self.git_available {
             branch_input =
                 branch_input.branches(&self.draft.branch, &self.branch_names, self.auto_branch);
@@ -611,7 +625,13 @@ impl State {
             }
             _ => None,
         };
-        if let Some((key, color)) = branch_status {
+        if self.branch_invalid {
+            branch = branch.push(
+                text(error_text(i18n, SaveError::Branch))
+                    .size(13)
+                    .color(colors::DANGER),
+            );
+        } else if let Some((key, color)) = branch_status {
             branch = branch.push(text(i18n.text(key)).size(13).color(color));
         }
         let flake_directory = text_input(
@@ -812,7 +832,7 @@ fn error_text(i18n: &I18n, error: SaveError) -> String {
         SaveError::Repository(error) => i18n.text(repository_error_hint(error)),
         SaveError::Token => i18n.text("settings-token-invalid-hint"),
         SaveError::Path => i18n.text("settings-error-path"),
-        SaveError::Branch => i18n.text("settings-error-branch"),
+        SaveError::Branch => i18n.text("settings-branch-invalid-hint"),
         SaveError::FlakeDirectory => i18n.text("settings-error-flake-directory"),
         SaveError::Write => {
             let mut args = FluentArgs::new();

@@ -534,6 +534,7 @@ async fn middle_click_pastes_primary_into_editable_settings_fields() {
                     | Repo::RepositoryBlurred
                     | Repo::TokenFocused
                     | Repo::TokenBlurred
+                    | Repo::BranchBlurred
             )
         )
     });
