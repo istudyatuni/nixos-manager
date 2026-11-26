@@ -467,13 +467,11 @@ impl History {
         targets.sort_by(|a, b| {
             (
                 b.system.active,
-                b.system.booted,
                 b.builds.first().and_then(|build| build.built_at),
                 b.system.generations.first(),
             )
                 .cmp(&(
                     a.system.active,
-                    a.system.booted,
                     a.builds.first().and_then(|build| build.built_at),
                     a.system.generations.first(),
                 ))
