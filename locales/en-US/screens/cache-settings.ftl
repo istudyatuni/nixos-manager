@@ -1,4 +1,4 @@
-cache-settings-url = Server URL
+cache-settings-url = Attic server URL
 cache-settings-server-name = Local server name
 cache-settings-server-hint = Attic uses this name as a local alias for the server URL
 cache-settings-token = Token

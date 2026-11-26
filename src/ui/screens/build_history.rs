@@ -611,7 +611,7 @@ fn confirmation<'a>(
     show_close: bool,
 ) -> Element<'a, Message> {
     let warning = if warns_about_switch {
-        "history-switch-warning"
+        "history-switch-non-system-profile-warning"
     } else {
         "history-activation-warning"
     };

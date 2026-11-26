@@ -28,7 +28,7 @@ async fn settings_show_an_invalid_branch_name_under_its_field_on_blur() {
     let renderer = headless().await;
     let size = Size::new(800.0, 1000.0);
     let viewport = Rectangle::with_size(size);
-    let hint = "Enter a valid Git branch name";
+    let hint = "Enter a valid branch name";
     let flake_label = "Subdirectory containing flake.nix";
     for (branch, use_tab) in [("invalid branch", false), ("", true)] {
         let _ = app.update(Message::Settings(settings::Message::BranchChanged(

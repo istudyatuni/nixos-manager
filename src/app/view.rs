@@ -77,9 +77,12 @@ impl App {
                 (!self.loading).then_some(Message::OpenSettingsMenu),
                 self.settings_menu_open.then(|| {
                     [
-                        (self.i18n.text("app-open-settings"), Message::OpenSettings),
                         (
-                            self.i18n.text("app-open-cache-settings"),
+                            self.i18n.text("app-settings-menu-general"),
+                            Message::OpenSettings,
+                        ),
+                        (
+                            self.i18n.text("app-settings-menu-cache"),
                             Message::OpenCacheSettings,
                         ),
                     ]

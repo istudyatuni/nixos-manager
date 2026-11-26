@@ -186,18 +186,18 @@ async fn toolbar_settings_menu_opens_both_dialogs_without_a_repository() {
         assert!(!app.settings_menu_open);
     }
 
-    let application_settings = "Application Settings";
-    let cache_settings = "Cache Settings";
+    let general = "General";
+    let cache = "Cache";
     for (label, expected) in [
-        (application_settings, Message::OpenSettings),
-        (cache_settings, Message::OpenCacheSettings),
+        (general, Message::OpenSettings),
+        (cache, Message::OpenCacheSettings),
     ] {
         let closed = layout(&mut app.view(), &renderer, size).2;
         assert!(
             closed
                 .text
                 .iter()
-                .all(|(label, _)| label != application_settings && label != cache_settings)
+                .all(|(label, _)| label != general && label != cache)
         );
         let messages = click(&app, gear.center());
         assert!(matches!(messages.as_slice(), [Message::OpenSettingsMenu]));
@@ -223,9 +223,9 @@ async fn toolbar_settings_menu_opens_both_dialogs_without_a_repository() {
             overlay.operate(Layout::new(&node), &renderer, &mut labels);
             labels
         };
-        let settings = menu.bounds(application_settings);
+        let settings = menu.bounds(general);
         assert!(gear.y + gear.height < settings.y);
-        assert!(settings.y < menu.bounds(cache_settings).y);
+        assert!(settings.y < menu.bounds(cache).y);
         let panel = menu.containers[0];
         assert_eq!(panel.x + panel.width, gear.x + gear.width);
 
@@ -240,7 +240,7 @@ async fn toolbar_settings_menu_opens_both_dialogs_without_a_repository() {
         if matches!(expected, Message::OpenSettings) {
             assert!(matches!(app.screen, Screen::Settings(_)));
             let dialog = layout(&mut app.view(), &renderer, size).2;
-            assert!(dialog.text.iter().any(|(title, _)| title == label));
+            assert!(dialog.contains("Application Settings"));
             let _ = app.update(Message::Settings(settings::Message::Cancel));
         }
     }
@@ -250,12 +250,17 @@ async fn toolbar_settings_menu_opens_both_dialogs_without_a_repository() {
     app.screen = Screen::CacheSettings(Box::new(cache_settings::State::new(None, false)));
     let labels = layout(&mut app.view(), &renderer, size).2;
     assert!(labels.contains("Could not find attic in PATH"));
-    assert!(!labels.contains("Server URL"));
+    assert!(!labels.contains("Attic server URL"));
 
     app.screen = Screen::CacheSettings(Box::new(cache_settings::State::new(None, true)));
     let labels = layout(&mut app.view(), &renderer, size).2;
-    let field_positions = ["Server URL", "Local server name", "Token", "Cache name"]
-        .map(|name| labels.bounds(name).y);
+    let field_positions = [
+        "Attic server URL",
+        "Local server name",
+        "Token",
+        "Cache name",
+    ]
+    .map(|name| labels.bounds(name).y);
     assert!(field_positions.windows(2).all(|pair| pair[0] < pair[1]));
     assert!(labels.contains("Attic manages the token. Use this field to enter a new token."));
 
@@ -559,7 +564,12 @@ async fn middle_click_pastes_primary_into_editable_settings_fields() {
     app.screen = Screen::CacheSettings(Box::new(cache_settings::State::new(None, true)));
     let cache = paste(
         &app,
-        &["Server URL", "Local server name", "Token", "Cache name"],
+        &[
+            "Attic server URL",
+            "Local server name",
+            "Token",
+            "Cache name",
+        ],
     );
     assert!(matches!(
         cache.as_slice(),

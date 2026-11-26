@@ -1,4 +1,4 @@
-cache-settings-url = URL сервера
+cache-settings-url = URL сервера Attic
 cache-settings-server-name = Локальное имя сервера
 cache-settings-server-hint = Attic использует это имя как локальный псевдоним для адреса
 cache-settings-token = Токен
